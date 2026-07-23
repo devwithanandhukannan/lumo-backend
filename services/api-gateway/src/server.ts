@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+let PORT = Number(process.env.PORT) || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -24,6 +24,7 @@ app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({
     status: 'UP',
     gateway: 'LUMO API Gateway Edge Proxy',
+    port: PORT,
     timestamp: new Date().toISOString(),
   });
 });
@@ -37,13 +38,27 @@ app.use('/api/v1/bookings', proxy(BOOKING_SERVICE_URL, { proxyReqPathResolver: (
 app.use('/api/v1/safety', proxy(SAFETY_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/safety${req.url}` }));
 app.use('/api/v1/admin', proxy(SAFETY_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/admin${req.url}` }));
 
-app.listen(PORT, () => {
-  console.log(`=======================================================`);
-  console.log(`🌐 LUMO API Gateway running on port ${PORT}`);
-  console.log(`🛡️ Forwarding Auth  -> ${AUTH_SERVICE_URL}`);
-  console.log(`👤 Forwarding Users -> ${USER_SERVICE_URL}`);
-  console.log(`👷 Forwarding Pro   -> ${PRO_SERVICE_URL}`);
-  console.log(`📦 Forwarding Booking -> ${BOOKING_SERVICE_URL}`);
-  console.log(`🚨 Forwarding Safety -> ${SAFETY_SERVICE_URL}`);
-  console.log(`=======================================================`);
-});
+const startServer = (targetPort: number) => {
+  const server = app.listen(targetPort, () => {
+    PORT = targetPort;
+    console.log(`=======================================================`);
+    console.log(`🌐 LUMO API Gateway running on port ${PORT}`);
+    console.log(`🛡️ Forwarding Auth     -> ${AUTH_SERVICE_URL}`);
+    console.log(`👤 Forwarding Users    -> ${USER_SERVICE_URL}`);
+    console.log(`👷 Forwarding Pro      -> ${PRO_SERVICE_URL}`);
+    console.log(`📦 Forwarding Booking  -> ${BOOKING_SERVICE_URL}`);
+    console.log(`🚨 Forwarding Safety   -> ${SAFETY_SERVICE_URL}`);
+    console.log(`=======================================================`);
+  });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE' && targetPort === 5000) {
+      console.warn(`⚠️ Port 5000 is occupied (e.g., macOS AirPlay). Falling back to Port 8000 for API Gateway...`);
+      startServer(8000);
+    } else {
+      console.error('API Gateway failed to start:', err);
+    }
+  });
+};
+
+startServer(PORT);

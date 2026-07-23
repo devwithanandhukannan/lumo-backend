@@ -14,6 +14,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./packages/database/src/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumo_user -d lumo_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine

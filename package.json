@@ -1,31 +1,23 @@
 {
-  "name": "lumo-backend",
+  "name": "lumo-backend-monorepo",
   "version": "1.0.0",
-  "description": "LUMO Safety-First Home Services Platform Backend",
-  "main": "dist/server.js",
+  "private": true,
+  "description": "LUMO Safety-First Home Services Platform Microservices Monorepo",
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2",
-    "pg": "^8.22.0",
-    "uuid": "^9.0.1",
-    "zod": "^3.23.8"
+    "build": "npm run build --workspaces",
+    "dev:gateway": "npm --workspace=services/api-gateway run dev",
+    "dev:auth": "npm --workspace=services/auth-service run dev",
+    "dev:user": "npm --workspace=services/user-service run dev",
+    "dev:pro": "npm --workspace=services/pro-service run dev",
+    "dev:catalog": "npm --workspace=services/catalog-service run dev",
+    "dev:booking": "npm --workspace=services/booking-service run dev",
+    "dev:safety": "npm --workspace=services/safety-service run dev"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.21",
-    "@types/jsonwebtoken": "^9.0.6",
-    "@types/node": "^20.12.12",
-    "@types/pg": "^8.20.0",
-    "@types/uuid": "^9.0.8",
     "tsx": "^4.10.5",
     "typescript": "^5.4.5"
   }

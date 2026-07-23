@@ -14,6 +14,7 @@ build/
 .env.test.local
 .env.production.local
 *.env
+firebase-service-account.json
 
 # Logs & Debug
 logs/

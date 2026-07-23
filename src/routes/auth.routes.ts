@@ -29,8 +29,16 @@ const refreshTokenSchema = z.object({
   refreshToken: z.string().min(1, 'Refresh token is required'),
 });
 
+const firebaseLoginSchema = z.object({
+  idToken: z.string().min(1, 'Firebase ID Token is required'),
+  role: z.enum(['CUSTOMER', 'PROFESSIONAL', 'ADMIN', 'SUPER_ADMIN']).optional(),
+  fullName: z.string().optional(),
+  gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
+});
+
 router.post('/otp/send', validateRequest(sendOtpSchema), (req, res, next) => authController.sendOTP(req, res, next));
 router.post('/otp/verify', validateRequest(verifyOtpSchema), (req, res, next) => authController.verifyOTP(req, res, next));
+router.post('/firebase-login', validateRequest(firebaseLoginSchema), (req, res, next) => authController.firebaseLogin(req, res, next));
 router.post('/oauth/google', validateRequest(oauthSchema), (req, res, next) => authController.googleOAuth(req, res, next));
 router.post('/oauth/apple', validateRequest(oauthSchema), (req, res, next) => authController.appleOAuth(req, res, next));
 router.post('/token/refresh', validateRequest(refreshTokenSchema), (req, res, next) => authController.refreshToken(req, res, next));

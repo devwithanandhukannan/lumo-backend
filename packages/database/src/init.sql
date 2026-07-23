@@ -188,4 +188,3 @@ INSERT INTO services (id, category_id, name, description, base_price, duration_m
 ('srv-plumb-01', 'cat-plumb', 'Tap & Mixer Repair', 'Fixing dripping taps, shower mixers, and pipeline leaks', 249.00, 30),
 ('srv-clean-01', 'cat-clean', 'Full House Deep Cleaning', 'Complete deep cleaning of bedrooms, living area, kitchen & toilets', 2499.00, 180)
 ON CONFLICT (id) DO NOTHING;
-

@@ -220,7 +220,101 @@ export class AuthService {
     };
   }
 
-  // 5. Logout
+  // 5. Firebase Auth Verification & Login
+  async firebaseLogin(
+    idToken: string,
+    requestedRole: UserRole = 'CUSTOMER',
+    fullName?: string,
+    gender?: Gender
+  ) {
+    if (!idToken) {
+      throw new AppError('Firebase ID Token is required', 400, 'MISSING_FIREBASE_TOKEN');
+    }
+
+    const { getFirebaseAuth } = require('../config/firebase.config');
+    const auth = getFirebaseAuth();
+
+    let decodedToken;
+    try {
+      decodedToken = await auth.verifyIdToken(idToken);
+    } catch (err: any) {
+      throw new AppError(`Firebase ID Token verification failed: ${err.message}`, 401, 'INVALID_FIREBASE_TOKEN');
+    }
+
+    const firebaseUid = decodedToken.uid;
+    const phoneNumber = decodedToken.phone_number || `+9100000${Math.floor(10000 + Math.random() * 90000)}`;
+    const email = decodedToken.email;
+
+    // Check if user exists by phone or email
+    const userRes = await pool.query(
+      'SELECT * FROM users WHERE phone_number = $1 OR (email IS NOT NULL AND email = $2)',
+      [phoneNumber, email || '']
+    );
+    let user = userRes.rows[0];
+
+    if (!user) {
+      const userId = `usr-${randomUUID().slice(0, 8)}`;
+      const name = fullName || decodedToken.name || (requestedRole === 'PROFESSIONAL' ? 'New Professional' : 'New Customer');
+      const userGender = gender || 'OTHER';
+
+      const insertRes = await pool.query(
+        `INSERT INTO users (id, phone_number, email, full_name, role, gender, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, true)
+         RETURNING *`,
+        [userId, phoneNumber, email, name, requestedRole, userGender]
+      );
+      user = insertRes.rows[0];
+
+      if (requestedRole === 'PROFESSIONAL') {
+        const proProfId = `pro-prof-${randomUUID().slice(0, 8)}`;
+        await pool.query(
+          `INSERT INTO professional_profiles (id, user_id, verification_status, documents, face_verified, is_online, is_busy, rating_avg, total_jobs_completed, acceptance_rate, cancellation_rate, account_health_score, is_blacklisted)
+           VALUES ($1, $2, 'PENDING', '{}'::jsonb, false, false, false, 5.0, 0, 100.0, 0.0, 100.0, false)`,
+          [proProfId, user.id]
+        );
+      }
+    } else {
+      if (!user.is_active) {
+        throw new AppError('Your account has been deactivated or suspended. Please contact support.', 403, 'ACCOUNT_DISABLED');
+      }
+    }
+
+    const tokenPayload = {
+      userId: user.id,
+      role: user.role as UserRole,
+      phoneNumber: user.phone_number,
+    };
+
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    await pool.query(
+      `INSERT INTO refresh_tokens (token, user_id, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (token) DO UPDATE SET expires_at = $3`,
+      [refreshToken, user.id, Date.now() + 7 * 24 * 60 * 60 * 1000]
+    );
+
+    return {
+      user: {
+        id: user.id,
+        firebaseUid,
+        phoneNumber: user.phone_number,
+        email: user.email,
+        fullName: user.full_name,
+        role: user.role,
+        gender: user.gender,
+        avatarUrl: user.avatar_url,
+      },
+      tokens: {
+        accessToken,
+        refreshToken,
+        expiresIn: config.jwtExpiresIn,
+      },
+    };
+  }
+
+  // 6. Logout
   async logout(refreshToken?: string) {
     if (refreshToken) {
       await pool.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);

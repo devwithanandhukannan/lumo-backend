@@ -53,6 +53,16 @@ export class AuthController {
     }
   }
 
+  async firebaseLogin(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { idToken, role, fullName, gender } = req.body;
+      const result = await authService.firebaseLogin(idToken, role, fullName, gender);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   async logout(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { refreshToken } = req.body;

@@ -16,6 +16,8 @@ const startServer = async () => {
       console.log(`🛡️  Auth Service:        http://localhost:${config.port}/api/v1/auth`);
       console.log(`👤 User Service:        http://localhost:${config.port}/api/v1/users`);
       console.log(`👷 Professional Service: http://localhost:${config.port}/api/v1/pro`);
+      console.log(`📦 Catalog & Booking:   http://localhost:${config.port}/api/v1/catalog & /bookings`);
+      console.log(`🚨 Safety & Admin SCC:  http://localhost:${config.port}/api/v1/safety & /admin`);
       console.log(`=======================================================`);
     });
 

@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
+    "dev:all": "./run-all.sh",
     "dev:gateway": "npm --workspace=services/api-gateway run dev",
     "dev:auth": "npm --workspace=services/auth-service run dev",
     "dev:user": "npm --workspace=services/user-service run dev",
@@ -18,6 +19,7 @@
     "dev:safety": "npm --workspace=services/safety-service run dev"
   },
   "devDependencies": {
+    "concurrently": "^10.0.3",
     "tsx": "^4.10.5",
     "typescript": "^5.4.5"
   }

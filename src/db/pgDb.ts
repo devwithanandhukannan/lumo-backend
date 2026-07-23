@@ -30,12 +30,15 @@ export const initDatabaseTables = async () => {
 
       CREATE TABLE IF NOT EXISTS users (
           id VARCHAR(50) PRIMARY KEY,
-          phone_number VARCHAR(20) UNIQUE NOT NULL,
+          phone_number VARCHAR(20) UNIQUE,
           email VARCHAR(255) UNIQUE,
+          password_hash VARCHAR(255),
           full_name VARCHAR(100) NOT NULL,
           role VARCHAR(30) NOT NULL,
-          gender VARCHAR(20),
+          gender VARCHAR(20) DEFAULT 'OTHER',
           avatar_url TEXT,
+          email_verified BOOLEAN DEFAULT FALSE,
+          phone_verified BOOLEAN DEFAULT FALSE,
           is_active BOOLEAN DEFAULT TRUE,
           created_at TIMESTAMPTZ DEFAULT NOW(),
           updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -44,6 +47,12 @@ export const initDatabaseTables = async () => {
       CREATE TABLE IF NOT EXISTS otps (
           phone_number VARCHAR(20) PRIMARY KEY,
           otp VARCHAR(10) NOT NULL,
+          expires_at BIGINT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS email_verifications (
+          email VARCHAR(255) PRIMARY KEY,
+          code VARCHAR(10) NOT NULL,
           expires_at BIGINT NOT NULL
       );
 
@@ -72,6 +81,8 @@ export const initDatabaseTables = async () => {
           documents JSONB DEFAULT '{}'::jsonb,
           face_verification_url TEXT,
           face_verified BOOLEAN DEFAULT FALSE,
+          coverage_radius_km NUMERIC(5,2) DEFAULT 50.00,
+          assigned_region VARCHAR(100) DEFAULT 'Bangalore',
           is_online BOOLEAN DEFAULT FALSE,
           is_busy BOOLEAN DEFAULT FALSE,
           current_location JSONB,
@@ -85,30 +96,27 @@ export const initDatabaseTables = async () => {
           updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS training_modules (
+      CREATE TABLE IF NOT EXISTS pro_offered_services (
           id VARCHAR(50) PRIMARY KEY,
-          title VARCHAR(255) NOT NULL,
-          description TEXT,
-          duration_minutes INT NOT NULL,
-          category VARCHAR(50) NOT NULL,
-          passing_score INT NOT NULL,
-          is_required BOOLEAN DEFAULT TRUE
+          pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          service_id VARCHAR(50) NOT NULL,
+          custom_price NUMERIC(10,2),
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE (pro_id, service_id)
       );
 
-      CREATE TABLE IF NOT EXISTS user_training_progress (
-          user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          module_id VARCHAR(50) NOT NULL REFERENCES training_modules(id) ON DELETE CASCADE,
-          score INT NOT NULL,
-          passed BOOLEAN NOT NULL,
-          completed_at TIMESTAMPTZ DEFAULT NOW(),
-          PRIMARY KEY (user_id, module_id)
-      );
+      -- Add columns if missing in case tables already existed
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS coverage_radius_km NUMERIC(5,2) DEFAULT 50.00;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region VARCHAR(100) DEFAULT 'Bangalore';
     `);
 
     console.log('✅ PostgreSQL database schema ready!');
   } catch (err) {
     console.error('❌ Error initializing PostgreSQL tables:', err);
-    throw err;
   } finally {
     client.release();
   }

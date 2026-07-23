@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Seed Default Super Admin User for Authentication Validation
+INSERT INTO users (id, phone_number, email, full_name, role)
+VALUES ('usr-admin-001', '+919999999999', 'admin@lumo.in', 'Super Admin', 'SUPER_ADMIN')
+ON CONFLICT (id) DO NOTHING;
+
 -- 2. OTP Store
 CREATE TABLE IF NOT EXISTS otps (
     phone_number VARCHAR(20) PRIMARY KEY,
@@ -174,17 +179,3 @@ CREATE TABLE IF NOT EXISTS misconduct_incidents (
     status VARCHAR(30) NOT NULL DEFAULT 'PENDING_REVIEW',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
--- Seed Categories & Services
-INSERT INTO service_categories (id, name, description, icon_url) VALUES
-('cat-elec', 'Electrical Services', 'Fan repair, wiring, switchboard installation & heavy appliances', 'https://cdn-icons-png.flaticon.com/512/2983/2983780.png'),
-('cat-plumb', 'Plumbing Services', 'Pipe leakages, tap repairs, bathroom fittings & water heaters', 'https://cdn-icons-png.flaticon.com/512/2983/2983788.png'),
-('cat-clean', 'Home Cleaning', 'Full house deep cleaning, kitchen cleaning & bathroom sanitation', 'https://cdn-icons-png.flaticon.com/512/2983/2983792.png')
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO services (id, category_id, name, description, base_price, duration_minutes) VALUES
-('srv-elec-01', 'cat-elec', 'Switch & Socket Repair', 'Fixing loose wiring, damaged sockets, or short circuits', 199.00, 30),
-('srv-elec-02', 'cat-elec', 'Ceiling Fan Repair & Installation', 'Complete fan motor servicing, capacitor replacement & installation', 349.00, 45),
-('srv-plumb-01', 'cat-plumb', 'Tap & Mixer Repair', 'Fixing dripping taps, shower mixers, and pipeline leaks', 249.00, 30),
-('srv-clean-01', 'cat-clean', 'Full House Deep Cleaning', 'Complete deep cleaning of bedrooms, living area, kitchen & toilets', 2499.00, 180)
-ON CONFLICT (id) DO NOTHING;

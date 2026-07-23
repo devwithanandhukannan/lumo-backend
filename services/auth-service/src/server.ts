@@ -1,11 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { pool, initDatabaseTables } from '@lumo/database';
-import { generateAccessToken, generateRefreshToken, AppError, errorHandler } from '@lumo/common';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
+import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
+import { AppError, errorHandler, generateAccessToken, generateRefreshToken } from '@lumo/common';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 
 dotenv.config();
 
@@ -15,8 +15,12 @@ const PORT = process.env.PORT || 5001;
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin
-if (getApps().length === 0) {
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://lumo_user:lumo_password@localhost:5432/lumo_db',
+});
+
+// Firebase Admin Initialization
+if (!process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
   try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
       const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
@@ -35,7 +39,8 @@ app.post('/api/v1/auth/otp/send', async (req, res, next) => {
     const { phoneNumber } = req.body;
     if (!phoneNumber) throw new AppError('Phone number required', 400);
 
-    const otp = '123456';
+    // Generate random 6-digit verification code
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
 
     await pool.query(
@@ -44,7 +49,13 @@ app.post('/api/v1/auth/otp/send', async (req, res, next) => {
       [phoneNumber, otp, expiresAt]
     );
 
-    res.json({ success: true, message: 'OTP sent', debugOtp: otp });
+    // Print to backend terminal server console for developer copy-paste
+    console.log(`\n=======================================================`);
+    console.log(`🔑 [ADMIN-AUTH-GATEWAY] Verification Code Generated for ${phoneNumber}:`);
+    console.log(`👉 OTP CODE: >>> ${otp} <<<`);
+    console.log(`=======================================================\n`);
+
+    res.json({ success: true, message: 'OTP sent to terminal console' });
   } catch (err) { next(err); }
 });
 
@@ -54,7 +65,7 @@ app.post('/api/v1/auth/otp/verify', async (req, res, next) => {
     const otpRes = await pool.query('SELECT * FROM otps WHERE phone_number = $1', [phoneNumber]);
     const record = otpRes.rows[0];
 
-    if (!record || record.otp !== otp) throw new AppError('Invalid OTP', 400);
+    if (!record || record.otp !== otp) throw new AppError('Invalid OTP code', 400);
     await pool.query('DELETE FROM otps WHERE phone_number = $1', [phoneNumber]);
 
     let userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
@@ -98,8 +109,8 @@ app.post('/api/v1/auth/firebase-login', async (req, res, next) => {
     if (!user) {
       const userId = `usr-${randomUUID().slice(0, 8)}`;
       const insertRes = await pool.query(
-        `INSERT INTO users (id, phone_number, email, full_name, role, gender, is_active) VALUES ($1, $2, $3, $4, $5, 'OTHER', true) RETURNING *`,
-        [userId, phoneNumber, decoded.email, fullName || decoded.name || 'Firebase User', role]
+        `INSERT INTO users (id, phone_number, full_name, role, gender, is_active) VALUES ($1, $2, $3, $4, $5, true) RETURNING *`,
+        [userId, phoneNumber, fullName || 'Firebase User', role, 'OTHER']
       );
       user = insertRes.rows[0];
     }
@@ -114,7 +125,6 @@ app.post('/api/v1/auth/firebase-login', async (req, res, next) => {
 
 app.use(errorHandler);
 
-app.listen(PORT, async () => {
-  await initDatabaseTables();
+app.listen(PORT, () => {
   console.log(`🛡️ Auth Service running on port ${PORT}`);
 });

@@ -31,13 +31,38 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(20) DEFAULT 'OTHER';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS age INT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS sex VARCHAR(20);
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT 'Bangalore';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS service_area TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS coverage_radius_km NUMERIC(5,2) DEFAULT 50.00;
-        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region VARCHAR(100) DEFAULT 'Bangalore';
-        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT 'Bangalore';
+        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region VARCHAR(100);
+        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS service_area TEXT;
+        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS requested_location TEXT;
+        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS location_change_status VARCHAR(30);
+        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS location_change_reason TEXT;
+        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
+
+        CREATE TABLE IF NOT EXISTS pro_offered_services (
+            id VARCHAR(50) PRIMARY KEY,
+            pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            service_id VARCHAR(50) NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+            custom_price NUMERIC(10,2),
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (pro_id, service_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pro_location_change_requests (
+            id VARCHAR(50) PRIMARY KEY,
+            pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            current_location TEXT,
+            requested_location TEXT NOT NULL,
+            status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
+            admin_reason TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
 
         CREATE TABLE IF NOT EXISTS pending_service_requests (
             id VARCHAR(50) PRIMARY KEY,

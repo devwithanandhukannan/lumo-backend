@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
-import { pool } from '@lumo/database';
+import { pool, initDatabaseTables } from '@lumo/database';
 import { authenticateToken, AuthenticatedRequest, AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
 
@@ -28,6 +28,9 @@ app.use(express.json({ limit: '50mb' }));
 app.use('/proff_cert', express.static(proffCertDir));
 app.use('/proff_cert', express.static(rootCertDir));
 
+// Ensure database tables exist
+initDatabaseTables().catch((err: any) => console.error('Database table init failed in pro-service:', err));
+
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Pro Service' }));
 
 // 1. Fetch Account Health & Rating Metrics
@@ -46,9 +49,13 @@ app.get('/api/v1/pro/health', authenticateToken, async (req: AuthenticatedReques
         acceptanceRate: parseFloat(pro.acceptance_rate),
         cancellationRate: parseFloat(pro.cancellation_rate),
         verificationStatus: pro.verification_status,
+        verificationNotes: pro.verification_notes || null,
         coverageRadiusKm: parseFloat(pro.coverage_radius_km || '50.00'),
-        assignedRegion: pro.assigned_region || pro.service_area || 'Kochi, Kerala',
-        serviceArea: pro.service_area || 'Kochi, Kerala',
+        assignedRegion: pro.assigned_region || pro.service_area || null,
+        serviceArea: pro.service_area || pro.assigned_region || null,
+        requestedLocation: pro.requested_location || null,
+        locationChangeStatus: pro.location_change_status || null,
+        locationChangeReason: pro.location_change_reason || null,
         isOnline: pro.is_online,
       },
     });
@@ -83,7 +90,11 @@ app.get('/api/v1/pro/profile', authenticateToken, async (req: AuthenticatedReque
           coverage_radius_km: parseFloat(pro.coverage_radius_km || '50.00'),
           rating_avg: parseFloat(pro.rating_avg),
           account_health_score: parseFloat(pro.account_health_score),
-          service_area: pro.service_area || user.service_area || 'Kochi, Kerala',
+          service_area: pro.service_area || user.service_area || null,
+          assigned_region: pro.assigned_region || pro.service_area || user.service_area || null,
+          verification_notes: pro.verification_notes || null,
+          requested_location: pro.requested_location || null,
+          location_change_status: pro.location_change_status || null,
         } : null,
         offeredServices: servicesRes.rows,
       },
@@ -91,13 +102,18 @@ app.get('/api/v1/pro/profile', authenticateToken, async (req: AuthenticatedReque
   } catch (err) { next(err); }
 });
 
-// 3. Upload Verification Documents (Govt ID, Police Clearance PDF, Face Selfie)
+// 3. Upload Verification Documents (Govt ID, Police Clearance PDF, Face Selfie, Exact Location)
 app.post('/api/v1/pro/documents', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
-    const { govtIdType, govtIdNumber, govtIdUrl, policeVerificationUrl, faceSelfieUrl, certifications } = req.body;
+    const { govtIdType, govtIdNumber, govtIdUrl, policeVerificationUrl, faceSelfieUrl, certifications, location, serviceArea } = req.body;
 
     const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [req.user!.userId]);
     let pro = proRes.rows[0];
+
+    const targetLocation = location || serviceArea || null;
+    if (targetLocation) {
+      await pool.query('UPDATE users SET service_area = $1 WHERE id = $2', [targetLocation, req.user!.userId]);
+    }
 
     const docs = {
       ...(pro?.documents || {}),
@@ -111,22 +127,25 @@ app.post('/api/v1/pro/documents', authenticateToken, async (req: AuthenticatedRe
 
     if (!pro) {
       const insertRes = await pool.query(
-        `INSERT INTO professional_profiles (id, user_id, verification_status, documents, face_verification_url, face_verified, is_online)
-         VALUES ($1, $2, 'PENDING', $3, $4, $5, false) RETURNING *`,
-        [`pro-${randomUUID().slice(0, 8)}`, req.user!.userId, JSON.stringify(docs), faceSelfieUrl || null, Boolean(faceSelfieUrl)]
+        `INSERT INTO professional_profiles (id, user_id, verification_status, documents, face_verification_url, face_verified, service_area, assigned_region, is_online)
+         VALUES ($1, $2, 'PENDING', $3, $4, $5, $6, $6, false) RETURNING *`,
+        [`pro-${randomUUID().slice(0, 8)}`, req.user!.userId, JSON.stringify(docs), faceSelfieUrl || null, Boolean(faceSelfieUrl), targetLocation]
       );
       pro = insertRes.rows[0];
     } else {
       const updateRes = await pool.query(
         `UPDATE professional_profiles
          SET verification_status = 'PENDING',
+             verification_notes = NULL,
              documents = $1,
              face_verification_url = COALESCE($2, face_verification_url),
              face_verified = CASE WHEN $2 IS NOT NULL THEN true ELSE face_verified END,
+             service_area = COALESCE($3, service_area),
+             assigned_region = COALESCE($3, assigned_region),
              is_online = false,
              updated_at = NOW()
-         WHERE user_id = $3 RETURNING *`,
-        [JSON.stringify(docs), faceSelfieUrl || null, req.user!.userId]
+         WHERE user_id = $4 RETURNING *`,
+        [JSON.stringify(docs), faceSelfieUrl || null, targetLocation, req.user!.userId]
       );
       pro = updateRes.rows[0];
     }
@@ -212,6 +231,28 @@ app.post('/api/v1/pro/request-service', authenticateToken, async (req: Authentic
   } catch (err) { next(err); }
 });
 
+app.post('/api/v1/pro/service-request', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { serviceName, description, suggestedPrice } = req.body;
+    if (!serviceName) throw new AppError('Service name required', 400);
+
+    const requestId = `svc-req-${randomUUID().slice(0, 8)}`;
+    const proId = req.user!.userId;
+
+    const result = await pool.query(
+      `INSERT INTO pending_service_requests (id, pro_id, service_name, description, suggested_price, status)
+       VALUES ($1, $2, $3, $4, $5, 'PENDING_ADMIN_APPROVAL') RETURNING *`,
+      [requestId, proId, serviceName, description || '', suggestedPrice ? parseFloat(suggestedPrice) : null]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'New service request submitted for Super Admin approval',
+      data: result.rows[0],
+    });
+  } catch (err) { next(err); }
+});
+
 // 6. Toggle Duty Status (Online / Offline)
 app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -241,6 +282,39 @@ app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedR
       success: true,
       message: `Duty status updated to ${isOnline ? 'ONLINE' : 'OFFLINE'}`,
       data: updateRes.rows[0],
+    });
+  } catch (err) { next(err); }
+});
+
+// 7. Request Location Change / Update (Pending Admin Approval)
+app.post('/api/v1/pro/location-change-request', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { requestedLocation, reason } = req.body;
+    if (!requestedLocation) throw new AppError('Requested location is required', 400);
+
+    const proId = req.user!.userId;
+    const requestId = `loc-req-${randomUUID().slice(0, 8)}`;
+
+    const proRes = await pool.query('SELECT service_area, assigned_region FROM professional_profiles WHERE user_id = $1', [proId]);
+    const currentLoc = proRes.rows[0]?.service_area || proRes.rows[0]?.assigned_region || 'Not set';
+
+    await pool.query(
+      `INSERT INTO pro_location_change_requests (id, pro_id, current_location, requested_location, status)
+       VALUES ($1, $2, $3, $4, 'PENDING_ADMIN_APPROVAL')`,
+      [requestId, proId, currentLoc, requestedLocation]
+    );
+
+    await pool.query(
+      `UPDATE professional_profiles
+       SET requested_location = $1, location_change_status = 'PENDING_ADMIN_APPROVAL', location_change_reason = $2, updated_at = NOW()
+       WHERE user_id = $3`,
+      [requestedLocation, reason || null, proId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Location change request submitted for Admin approval',
+      data: { requestId, requestedLocation, status: 'PENDING_ADMIN_APPROVAL' },
     });
   } catch (err) { next(err); }
 });

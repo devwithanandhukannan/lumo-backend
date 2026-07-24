@@ -1,106 +1,94 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { Pool } from 'pg';
-import { randomUUID, createHash } from 'crypto';
+import argon2 from 'argon2';
+import { randomUUID } from 'crypto';
 import { AppError, errorHandler, generateAccessToken, generateRefreshToken } from '@lumo/common';
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+
+import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 5001;
+// Enforce essential environment variables in production
+if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
+  throw new Error('FATAL: DATABASE_URL environment variable is required in production.');
+}
 
-app.use(cors());
-app.use(express.json());
+const app = express();
+const PORT = Number(process.env.PORT) || 5001;
+
+// 1. Security & Middleware Configuration
+app.use(helmet());
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
+  credentials: true,
+}));
+app.use(express.json({ limit: '10kb' })); // Restrict payload size
+
+// Rate limiting for auth endpoints (max 5 requests per 15 mins for OTP/Login)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { success: false, error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://lumo_user:lumo_password@localhost:5432/lumo_db',
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
-function hashPassword(password: string): string {
-  return createHash('sha256').update(password).digest('hex');
-}
-
-async function ensureSchema() {
+// 2. Firebase Admin Initialization
+if (getApps().length === 0) {
   try {
-    await pool.query(`
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(20) DEFAULT 'OTHER';
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS age INT;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS sex VARCHAR(20);
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+    const rawSaPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || 'firebase-service-account.json';
+    const candidatePaths = [
+      path.isAbsolute(rawSaPath) ? rawSaPath : path.resolve(process.cwd(), rawSaPath),
+      path.resolve(__dirname, '../firebase-service-account.json'),
+      path.resolve(__dirname, '../../../firebase-service-account.json'),
+    ];
 
-      CREATE TABLE IF NOT EXISTS professional_profiles (
-          id VARCHAR(50) PRIMARY KEY,
-          user_id VARCHAR(50) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          verification_status VARCHAR(30) DEFAULT 'PENDING',
-          verification_notes TEXT,
-          documents JSONB DEFAULT '{}'::jsonb,
-          face_verification_url TEXT,
-          face_verified BOOLEAN DEFAULT FALSE,
-          is_online BOOLEAN DEFAULT FALSE,
-          is_busy BOOLEAN DEFAULT FALSE,
-          current_location JSONB,
-          service_area TEXT DEFAULT 'Bangalore',
-          assigned_region TEXT DEFAULT 'Bangalore',
-          coverage_radius_km NUMERIC(6,2) DEFAULT 50.00,
-          rating_avg NUMERIC(3,2) DEFAULT 5.0,
-          total_jobs_completed INT DEFAULT 0,
-          acceptance_rate NUMERIC(5,2) DEFAULT 100.0,
-          cancellation_rate NUMERIC(5,2) DEFAULT 0.0,
-          account_health_score NUMERIC(5,2) DEFAULT 100.0,
-          is_blacklisted BOOLEAN DEFAULT FALSE,
-          created_at TIMESTAMPTZ DEFAULT NOW(),
-          updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
+    let loaded = false;
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        const serviceAccount = require(p);
+        initializeApp({ credential: cert(serviceAccount) });
+        console.log(`🔥 Firebase Admin SDK initialized successfully via ${p} (Project: ${serviceAccount.project_id})`);
+        loaded = true;
+        break;
+      }
+    }
 
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_status VARCHAR(30) DEFAULT 'PENDING';
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS documents JSONB DEFAULT '{}'::jsonb;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS face_verification_url TEXT;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS face_verified BOOLEAN DEFAULT FALSE;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT FALSE;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS is_busy BOOLEAN DEFAULT FALSE;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS current_location JSONB;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT 'Bangalore';
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region TEXT DEFAULT 'Bangalore';
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS coverage_radius_km NUMERIC(6,2) DEFAULT 50.00;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS rating_avg NUMERIC(3,2) DEFAULT 5.0;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS total_jobs_completed INT DEFAULT 0;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS acceptance_rate NUMERIC(5,2) DEFAULT 100.0;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS cancellation_rate NUMERIC(5,2) DEFAULT 0.0;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS account_health_score NUMERIC(5,2) DEFAULT 100.0;
-      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN DEFAULT FALSE;
-    `);
+    if (!loaded) {
+      initializeApp();
+      console.log('🔥 Firebase Admin SDK initialized via Application Default Credentials');
+    }
   } catch (err: any) {
-    console.warn('⚠️ Schema migration warning:', err.message);
+    console.warn('⚠️ Firebase Admin SDK initialization warning:', err.message);
   }
 }
 
-// Run schema migration on startup
-ensureSchema();
-
-// Firebase Admin Initialization
-if (!process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+// 3. Healthcheck
+app.get('/health', async (_req: Request, res: Response) => {
   try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-      const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
-      initializeApp({ credential: cert(serviceAccount) });
-    } else {
-      initializeApp();
-    }
-  } catch (e) {}
-}
+    await pool.query('SELECT 1');
+    res.json({ status: 'UP', database: 'CONNECTED', service: 'Auth Service' });
+  } catch (err) {
+    res.status(500).json({ status: 'DOWN', database: 'DISCONNECTED' });
+  }
+});
 
-app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Auth Service' }));
-
-// 1. Send OTP Request
-app.post('/api/v1/auth/otp/send', async (req, res, next) => {
+// 4. Send OTP Request
+app.post('/api/v1/auth/otp/send', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { phoneNumber } = req.body;
     if (!phoneNumber) throw new AppError('Phone number required', 400);
@@ -114,31 +102,37 @@ app.post('/api/v1/auth/otp/send', async (req, res, next) => {
       [phoneNumber, otp, expiresAt]
     );
 
-    console.log(`\n=======================================================`);
-    console.log(`🔑 [ADMIN-AUTH-GATEWAY] Verification Code Generated for ${phoneNumber}:`);
-    console.log(`👉 OTP CODE: >>> ${otp} <<<`);
-    console.log(`=======================================================\n`);
+    // Development-only log
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[DEV ONLY] OTP for ${phoneNumber}: ${otp}`);
+    }
 
-    res.json({ success: true, message: 'OTP sent successfully', debugOtp: otp });
+    res.json({ success: true, message: 'OTP sent successfully' });
   } catch (err) { next(err); }
 });
 
-// 2. Verify OTP Request
-app.post('/api/v1/auth/otp/verify', async (req, res, next) => {
+// 5. Verify OTP Request (Using DB Transactions)
+app.post('/api/v1/auth/otp/verify', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  const client = await pool.connect();
   try {
-    await ensureSchema();
     const { phoneNumber, otp, role = 'CUSTOMER', fullName, gender = 'OTHER' } = req.body;
-    const otpRes = await pool.query('SELECT * FROM otps WHERE phone_number = $1', [phoneNumber]);
+    if (!phoneNumber || !otp) throw new AppError('Phone number and OTP code required', 400);
+
+    const otpRes = await client.query('SELECT * FROM otps WHERE phone_number = $1', [phoneNumber]);
     const record = otpRes.rows[0];
 
-    if (!record || record.otp !== otp) throw new AppError('Invalid OTP code', 400);
+    if (!record || record.otp !== otp || Number(record.expires_at) < Date.now()) {
+      throw new AppError('Invalid or expired OTP code', 400);
+    }
 
-    let userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    await client.query('BEGIN');
+
+    let userRes = await client.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
     let user = userRes.rows[0];
 
     if (!user) {
       const userId = `usr-${randomUUID().slice(0, 8)}`;
-      const insertRes = await pool.query(
+      const insertRes = await client.query(
         `INSERT INTO users (id, phone_number, full_name, role, gender, phone_verified, is_active)
          VALUES ($1, $2, $3, $4, $5, true, true) RETURNING *`,
         [userId, phoneNumber, fullName || 'New User', role, gender]
@@ -146,163 +140,186 @@ app.post('/api/v1/auth/otp/verify', async (req, res, next) => {
       user = insertRes.rows[0];
 
       if (role === 'PROFESSIONAL') {
-        await pool.query(
+        await client.query(
           `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km)
            VALUES ($1, $2, 'PENDING', 50.00) ON CONFLICT (user_id) DO NOTHING`,
           [`pro-${randomUUID().slice(0, 8)}`, user.id]
         );
       }
     } else {
-      await pool.query('UPDATE users SET phone_verified = true WHERE id = $1', [user.id]);
+      await client.query('UPDATE users SET phone_verified = true WHERE id = $1', [user.id]);
     }
 
-    // Clear OTP after user creation/verification succeeds
-    await pool.query('DELETE FROM otps WHERE phone_number = $1', [phoneNumber]);
+    await client.query('DELETE FROM otps WHERE phone_number = $1', [phoneNumber]);
+    await client.query('COMMIT');
 
     const payload = { userId: user.id, role: user.role, phoneNumber: user.phone_number };
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
 
     res.json({ success: true, data: { user, tokens: { accessToken, refreshToken } } });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
 });
 
-// 3. Professional Email + Password Register
-app.post('/api/v1/auth/pro/register', async (req, res, next) => {
+// 6. Professional Register (Argon2 Password Hashing)
+app.post('/api/v1/auth/pro/register', async (req: Request, res: Response, next: NextFunction) => {
+  const client = await pool.connect();
   try {
-    const { email, password, phoneNumber, fullName, gender = 'OTHER' } = req.body;
-    if (!email || !password || !fullName) throw new AppError('Email, password and name are required', 400);
+    const { email, password, phoneNumber, fullName, gender = 'OTHER', location, serviceArea, assignedRegion } = req.body;
+    if (!email || !password || !fullName) throw new AppError('Email, password and name required', 400);
 
-    // Auto-migrate column if missing
-    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)').catch(() => {});
+    const targetLocation = location || serviceArea || assignedRegion || null;
 
-    const passHash = hashPassword(password);
-    const existing = await pool.query('SELECT * FROM users WHERE email = $1 OR (phone_number IS NOT NULL AND phone_number = $2)', [email, phoneNumber || '']);
-    
+    const existing = await client.query('SELECT * FROM users WHERE email = $1 OR (phone_number IS NOT NULL AND phone_number = $2)', [email, phoneNumber || '']);
+
     if (existing.rows.length > 0) {
       const existingUser = existing.rows[0];
-      // If password matches existing account, seamlessly log in
-      if (existingUser.password_hash === passHash) {
-        const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [existingUser.id]);
+      const isPasswordMatch = existingUser.password_hash ? await argon2.verify(existingUser.password_hash, password) : false;
+
+      if (isPasswordMatch) {
+        const proRes = await client.query('SELECT * FROM professional_profiles WHERE user_id = $1', [existingUser.id]);
         const pro = proRes.rows[0];
 
-        const payload = { userId: existingUser.id, role: existingUser.role, email: existingUser.email };
-        const accessToken = generateAccessToken(payload);
-        const refreshToken = generateRefreshToken(payload);
+        if (targetLocation) {
+          await client.query('UPDATE users SET service_area = $1 WHERE id = $2', [targetLocation, existingUser.id]);
+          await client.query('UPDATE professional_profiles SET service_area = $1, assigned_region = $1 WHERE user_id = $2', [targetLocation, existingUser.id]);
+        }
 
+        const payload = { userId: existingUser.id, role: existingUser.role, email: existingUser.email };
         return res.status(200).json({
           success: true,
           message: 'Account already exists. Seamlessly logged in.',
           data: {
-            user: existingUser,
+            user: { ...existingUser, service_area: targetLocation || existingUser.service_area },
             verificationStatus: pro ? pro.verification_status : 'PENDING',
-            tokens: { accessToken, refreshToken }
+            tokens: { accessToken: generateAccessToken(payload), refreshToken: generateRefreshToken(payload) }
           }
         });
       }
-      throw new AppError('An account with this email address already exists. Please tap Sign In.', 400);
+      throw new AppError('An account with this email address already exists.', 400);
     }
 
+    await client.query('BEGIN');
+    const passHash = await argon2.hash(password);
     const userId = `usr-${randomUUID().slice(0, 8)}`;
 
-    const insertRes = await pool.query(
-      `INSERT INTO users (id, email, password_hash, phone_number, full_name, role, gender, is_active)
-       VALUES ($1, $2, $3, $4, $5, 'PROFESSIONAL', $6, true) RETURNING *`,
-      [userId, email, passHash, phoneNumber || null, fullName, gender]
+    const insertRes = await client.query(
+      `INSERT INTO users (id, email, password_hash, phone_number, full_name, role, gender, service_area, is_active)
+       VALUES ($1, $2, $3, $4, $5, 'PROFESSIONAL', $6, $7, true) RETURNING *`,
+      [userId, email, passHash, phoneNumber || null, fullName, gender, targetLocation]
     );
     const user = insertRes.rows[0];
 
-    await pool.query(
-      `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region)
-       VALUES ($1, $2, 'PENDING', 50.00, 'Bangalore') ON CONFLICT (user_id) DO NOTHING`,
-      [`pro-${randomUUID().slice(0, 8)}`, user.id]
+    await client.query(
+      `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region, service_area)
+       VALUES ($1, $2, 'PENDING', 50.00, $3, $3) ON CONFLICT (user_id) DO UPDATE SET assigned_region = COALESCE(EXCLUDED.assigned_region, professional_profiles.assigned_region), service_area = COALESCE(EXCLUDED.service_area, professional_profiles.service_area)`,
+      [`pro-${randomUUID().slice(0, 8)}`, user.id, targetLocation]
     );
 
-    const payload = { userId: user.id, role: user.role, email: user.email };
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = generateRefreshToken(payload);
+    await client.query('COMMIT');
 
+    const payload = { userId: user.id, role: user.role, email: user.email };
     res.status(201).json({
       success: true,
       data: {
         user,
         verificationStatus: 'PENDING',
-        tokens: { accessToken, refreshToken }
+        tokens: { accessToken: generateAccessToken(payload), refreshToken: generateRefreshToken(payload) }
       }
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
 });
 
-// 4. Professional Email + Password Login
-app.post('/api/v1/auth/pro/login', async (req, res, next) => {
+// 6b. Professional Register via Phone Onboarding (Updates Profile, Email, Age & Location)
+app.post('/api/v1/auth/pro/register-phone', async (req: Request, res: Response, next: NextFunction) => {
+  const client = await pool.connect();
   try {
-    const { email, password } = req.body;
-    if (!email || !password) throw new AppError('Email and password required', 400);
+    const { phoneNumber, fullName, age, email, gender = 'OTHER', serviceArea, location } = req.body;
+    if (!phoneNumber || !fullName) throw new AppError('Phone number and full name required', 400);
 
-    const userRes = await pool.query('SELECT * FROM users WHERE email = $1 AND role = \'PROFESSIONAL\'', [email]);
-    const user = userRes.rows[0];
+    const targetLocation = serviceArea || location || null;
 
-    if (!user || user.password_hash !== hashPassword(password)) {
-      throw new AppError('Invalid email or password', 401);
+    let userRes = await client.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    let user = userRes.rows[0];
+
+    await client.query('BEGIN');
+
+    if (!user) {
+      const userId = `usr-${randomUUID().slice(0, 8)}`;
+      const insertRes = await client.query(
+        `INSERT INTO users (id, phone_number, full_name, email, age, gender, role, service_area, phone_verified, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, 'PROFESSIONAL', $7, true, true) RETURNING *`,
+        [userId, phoneNumber, fullName, email || null, age || null, gender, targetLocation]
+      );
+      user = insertRes.rows[0];
+    } else {
+      const updateRes = await client.query(
+        `UPDATE users
+         SET full_name = COALESCE($1, full_name),
+             email = COALESCE($2, email),
+             age = COALESCE($3, age),
+             gender = COALESCE($4, gender),
+             service_area = COALESCE($5, service_area),
+             role = 'PROFESSIONAL',
+             updated_at = NOW()
+         WHERE id = $6 RETURNING *`,
+        [fullName, email || null, age || null, gender, targetLocation, user.id]
+      );
+      user = updateRes.rows[0];
     }
 
-    const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [user.id]);
-    const pro = proRes.rows[0];
+    let proRes = await client.query('SELECT * FROM professional_profiles WHERE user_id = $1', [user.id]);
+    let pro = proRes.rows[0];
 
-    const payload = { userId: user.id, role: user.role, email: user.email };
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = generateRefreshToken(payload);
+    if (!pro) {
+      const insertProRes = await client.query(
+        `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region, service_area)
+         VALUES ($1, $2, 'PENDING', 50.00, $3, $3) RETURNING *`,
+        [`pro-${randomUUID().slice(0, 8)}`, user.id, targetLocation]
+      );
+      pro = insertProRes.rows[0];
+    } else if (targetLocation) {
+      const updateProRes = await client.query(
+        `UPDATE professional_profiles
+         SET service_area = $1, assigned_region = $1, updated_at = NOW()
+         WHERE user_id = $2 RETURNING *`,
+        [targetLocation, user.id]
+      );
+      pro = updateProRes.rows[0];
+    }
 
-    res.json({
+    await client.query('COMMIT');
+
+    console.log(`📱 [PRO-REGISTER-PHONE] Registered/Updated pro ${user.full_name} (${user.email || 'No Email'}) at location "${targetLocation || 'Not set'}"`);
+
+    res.status(200).json({
       success: true,
+      message: 'Professional profile details saved',
       data: {
         user,
         verificationStatus: pro ? pro.verification_status : 'PENDING',
-        coverageRadiusKm: pro ? parseFloat(pro.coverage_radius_km) : 50.0,
-        tokens: { accessToken, refreshToken }
-      }
+      },
     });
-  } catch (err) { next(err); }
-});
-
-// 5. Send Email Code
-app.post('/api/v1/auth/email/send', async (req, res, next) => {
-  try {
-    const { email } = req.body;
-    if (!email) throw new AppError('Email address required', 400);
-
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000;
-
-    await pool.query(
-      `INSERT INTO email_verifications (email, code, expires_at) VALUES ($1, $2, $3)
-       ON CONFLICT (email) DO UPDATE SET code = $2, expires_at = $3`,
-      [email, code, expiresAt]
-    );
-
-    console.log(`📧 [EMAIL-VERIFY] Code for ${email}: >>> ${code} <<<`);
-
-    res.json({ success: true, message: 'Verification email code sent', debugCode: code });
-  } catch (err) { next(err); }
-});
-
-// 6. Verify Email Code
-app.post('/api/v1/auth/email/verify', async (req, res, next) => {
-  try {
-    const { email, code } = req.body;
-    const resVer = await pool.query('SELECT * FROM email_verifications WHERE email = $1', [email]);
-    const rec = resVer.rows[0];
-
-    if (!rec || rec.code !== code) throw new AppError('Invalid email verification code', 400);
-    await pool.query('DELETE FROM email_verifications WHERE email = $1', [email]);
-    await pool.query('UPDATE users SET email_verified = true WHERE email = $1', [email]);
-
-    res.json({ success: true, message: 'Email verified successfully' });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
 });
 
 // 7. Firebase Login
-app.post('/api/v1/auth/firebase-login', async (req, res, next) => {
+app.post('/api/v1/auth/firebase-login', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { idToken, role = 'CUSTOMER', fullName } = req.body;
     if (!idToken) throw new AppError('Firebase ID Token required', 400);
@@ -323,96 +340,32 @@ app.post('/api/v1/auth/firebase-login', async (req, res, next) => {
     }
 
     const payload = { userId: user.id, role: user.role, phoneNumber: user.phone_number };
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = generateRefreshToken(payload);
-
-    res.json({ success: true, data: { user, tokens: { accessToken, refreshToken } } });
-  } catch (err) { next(err); }
-});
-
-// 8. Pro Register Phone (Step 2 Onboarding Update)
-app.post('/api/v1/auth/pro/register-phone', async (req, res, next) => {
-  try {
-    await ensureSchema();
-    const { phoneNumber, fullName, age, email, gender, serviceArea } = req.body;
-    if (!phoneNumber || !fullName) throw new AppError('Phone number and full name required', 400);
-
-    let userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
-    let user = userRes.rows[0];
-
-    if (user) {
-      const selectedArea = serviceArea && serviceArea.trim() !== '' ? serviceArea.trim() : 'Kochi, Kerala';
-
-      const updateRes = await pool.query(
-        `UPDATE users 
-         SET full_name = $1, age = $2, email = COALESCE($3, email), gender = $4, service_area = $5, updated_at = NOW() 
-         WHERE id = $6 RETURNING *`,
-        [fullName, age || null, email || null, gender || 'MALE', selectedArea, user.id]
-      );
-      user = updateRes.rows[0];
-
-      await pool.query(
-        `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region, service_area)
-         VALUES ($1, $2, 'PENDING', 50.00, $3, $3)
-         ON CONFLICT (user_id) DO UPDATE SET assigned_region = $3, service_area = $3, updated_at = NOW()`,
-        [`pro-${randomUUID().slice(0, 8)}`, user.id, selectedArea]
-      );
-    } else {
-      const userId = `usr-${randomUUID().slice(0, 8)}`;
-      const insertRes = await pool.query(
-        `INSERT INTO users (id, phone_number, full_name, age, email, role, gender, service_area, phone_verified, is_active)
-         VALUES ($1, $2, $3, $4, $5, 'PROFESSIONAL', $6, $7, true, true) RETURNING *`,
-        [userId, phoneNumber, fullName, age || null, email || null, gender || 'MALE', serviceArea || 'Bangalore']
-      );
-      user = insertRes.rows[0];
-    }
-
-    await pool.query(
-      `INSERT INTO professional_profiles (id, user_id, verification_status, service_area, coverage_radius_km)
-       VALUES ($1, $2, 'PENDING', $3, 50.00)
-       ON CONFLICT (user_id) DO UPDATE SET service_area = $3`,
-      [`pro-${randomUUID().slice(0, 8)}`, user.id, serviceArea || 'Bangalore']
-    );
-
-    const payload = { userId: user.id, role: user.role, phoneNumber: user.phone_number };
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = generateRefreshToken(payload);
-
     res.json({
       success: true,
       data: {
         user,
-        verificationStatus: 'PENDING',
-        tokens: { accessToken, refreshToken }
+        tokens: { accessToken: generateAccessToken(payload), refreshToken: generateRefreshToken(payload) }
       }
     });
   } catch (err) { next(err); }
 });
 
-// 9. Customer Complete Profile
-app.post('/api/v1/auth/customer/complete-profile', async (req, res, next) => {
-  try {
-    await ensureSchema();
-    const { fullName, age, sex, email } = req.body;
-    const userId = (req as any).user?.userId;
-
-    if (!userId) {
-      return res.json({ success: true, message: 'Profile updated locally' });
-    }
-
-    const updateRes = await pool.query(
-      `UPDATE users 
-       SET full_name = COALESCE($1, full_name), age = COALESCE($2, age), sex = COALESCE($3, sex), email = COALESCE($4, email), updated_at = NOW() 
-       WHERE id = $5 RETURNING *`,
-      [fullName, age, sex, email, userId]
-    );
-
-    res.json({ success: true, data: updateRes.rows[0] });
-  } catch (err) { next(err); }
-});
-
 app.use(errorHandler);
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🛡️ Auth Service running on port ${PORT}`);
+// 8. Graceful Shutdown Implementation
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🛡️ Auth Service running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
 });
+
+const gracefulShutdown = (signal: string) => {
+  console.log(`Received ${signal}. Shutting down gracefully...`);
+  server.close(async () => {
+    console.log('HTTP server closed.');
+    await pool.end();
+    console.log('PostgreSQL connections closed.');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

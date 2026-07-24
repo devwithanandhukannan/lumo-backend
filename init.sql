@@ -63,8 +63,11 @@ CREATE TABLE IF NOT EXISTS professional_profiles (
     is_online BOOLEAN DEFAULT FALSE,
     is_busy BOOLEAN DEFAULT FALSE,
     current_location JSONB,
-    service_area TEXT DEFAULT 'Bangalore',
-    assigned_region TEXT DEFAULT 'Bangalore',
+    service_area TEXT,
+    assigned_region TEXT,
+    requested_location TEXT,
+    location_change_status VARCHAR(30),
+    location_change_reason TEXT,
     coverage_radius_km NUMERIC(6,2) DEFAULT 50.00,
     rating_avg NUMERIC(3,2) DEFAULT 5.0,
     total_jobs_completed INT DEFAULT 0,
@@ -76,10 +79,22 @@ CREATE TABLE IF NOT EXISTS professional_profiles (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5b. Pro Offered Services (with commission hidden from pros)
+-- 5b. Location Change Requests Table
+CREATE TABLE IF NOT EXISTS pro_location_change_requests (
+    id VARCHAR(50) PRIMARY KEY,
+    pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    current_location TEXT,
+    requested_location TEXT NOT NULL,
+    status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
+    admin_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5c. Pro Offered Services (with commission hidden from pros)
 ALTER TABLE IF EXISTS services ADD COLUMN IF NOT EXISTS commission_pct NUMERIC(5,2) DEFAULT 15.00;
 
--- 5c. Pending Custom Service Requests from Professionals
+-- 5d. Pending Custom Service Requests from Professionals
 CREATE TABLE IF NOT EXISTS pending_service_requests (
     id VARCHAR(50) PRIMARY KEY,
     pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,

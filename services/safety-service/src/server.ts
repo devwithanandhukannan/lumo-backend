@@ -123,12 +123,16 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
       `SELECT u.id as user_id, u.full_name, u.email, u.phone_number, u.gender, u.email_verified, u.phone_verified,
               COALESCE(p.id, CONCAT('pro-', u.id)) as profile_id,
               COALESCE(p.verification_status, 'PENDING') as verification_status,
+              p.verification_notes,
               COALESCE(p.documents, '{}'::jsonb) as documents,
               COALESCE(p.face_verification_url, u.avatar_url) as face_verification_url,
               p.face_verified,
               COALESCE(p.coverage_radius_km, 50.00) as coverage_radius_km,
-              COALESCE(p.service_area, p.assigned_region, 'Kochi, Kerala') as service_area,
-              COALESCE(p.assigned_region, p.service_area, 'Kochi, Kerala') as assigned_region,
+              COALESCE(p.service_area, p.assigned_region, u.service_area) as service_area,
+              COALESCE(p.assigned_region, p.service_area, u.service_area) as assigned_region,
+              p.requested_location,
+              p.location_change_status,
+              p.location_change_reason,
               COALESCE(p.is_online, false) as is_online,
               COALESCE(p.rating_avg, 5.0) as rating_avg,
               u.created_at
@@ -142,33 +146,128 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
   } catch (err) { next(err); }
 });
 
-// 5. Admin: Verify / Approve / Suspend / Reject Professional
+// 5. Admin: Verify / Approve / Suspend / Reject Professional (with Rejection Reason)
 app.post('/api/v1/admin/pro/:userId/verify', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const { status, notes } = req.body;
+    const { status, notes, rejectionReason } = req.body;
 
     if (!['APPROVED', 'SUSPENDED', 'REJECTED', 'PENDING'].includes(status)) {
       throw new AppError('Invalid verification status', 400);
     }
 
+    const noteContent = notes || rejectionReason || (status === 'REJECTED' ? 'Documents or selfie photo require re-verification' : null);
+
     const proRes = await pool.query(
       `UPDATE professional_profiles
-       SET verification_status = $1,
+       SET verification_status = $1::varchar,
            verification_notes = $2,
-           is_online = CASE WHEN $1 != 'APPROVED' THEN false ELSE is_online END,
+           is_online = CASE WHEN $1::varchar != 'APPROVED' THEN false ELSE is_online END,
            updated_at = NOW()
        WHERE user_id = $3 RETURNING *`,
-      [status, notes || null, userId]
+      [status, noteContent, userId]
     );
 
     if (proRes.rows.length === 0) throw new AppError('Professional profile not found', 404);
+
+    console.log(`🛡️ [ADMIN-VERIFY] Updated pro ${userId} status to ${status} (Reason: ${noteContent || 'N/A'})`);
 
     res.json({
       success: true,
       message: `Professional status updated to ${status}`,
       data: proRes.rows[0],
     });
+  } catch (err) { next(err); }
+});
+
+// 5a. Admin: Delete Professional Account Permanently
+app.delete('/api/v1/admin/pro/:userId', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM professional_profiles WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM users WHERE id = $1', [userId]);
+      await client.query('COMMIT');
+      console.log(`🗑️ [ADMIN-DELETE-PRO] Permanently deleted professional user ${userId}`);
+      res.json({ success: true, message: `Professional account ${userId} permanently deleted` });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) { next(err); }
+});
+
+// 5b. Admin: Fetch Pending Location Change Requests
+app.get('/api/v1/admin/pro/location-requests', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    await ensureSafetySchema();
+    const requests = await pool.query(
+      `SELECT r.*, u.full_name as pro_name, u.phone_number as pro_phone, u.email as pro_email
+       FROM pro_location_change_requests r
+       JOIN users u ON r.pro_id = u.id
+       ORDER BY CASE WHEN r.status = 'PENDING_ADMIN_APPROVAL' THEN 1 ELSE 2 END, r.created_at DESC`
+    );
+    res.json({ success: true, data: requests.rows });
+  } catch (err) { next(err); }
+});
+
+// 5c. Admin: Approve Location Change Request
+app.post('/api/v1/admin/pro/location-requests/:requestId/approve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const reqRes = await pool.query('SELECT * FROM pro_location_change_requests WHERE id = $1', [requestId]);
+    const reqItem = reqRes.rows[0];
+
+    if (!reqItem) throw new AppError('Location change request not found', 404);
+
+    await pool.query(
+      `UPDATE pro_location_change_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
+      [requestId]
+    );
+
+    await pool.query(
+      `UPDATE professional_profiles
+       SET service_area = $1, assigned_region = $1, requested_location = NULL, location_change_status = 'APPROVED', updated_at = NOW()
+       WHERE user_id = $2`,
+      [reqItem.requested_location, reqItem.pro_id]
+    );
+
+    await pool.query('UPDATE users SET service_area = $1 WHERE id = $2', [reqItem.requested_location, reqItem.pro_id]);
+
+    console.log(`✅ [ADMIN-LOCATION-APPROVED] Approved location change for pro ${reqItem.pro_id} to "${reqItem.requested_location}"`);
+
+    res.json({ success: true, message: `Location updated to ${reqItem.requested_location}` });
+  } catch (err) { next(err); }
+});
+
+// 5d. Admin: Reject Location Change Request
+app.post('/api/v1/admin/pro/location-requests/:requestId/reject', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const { reason } = req.body;
+
+    const reqRes = await pool.query('SELECT * FROM pro_location_change_requests WHERE id = $1', [requestId]);
+    const reqItem = reqRes.rows[0];
+
+    if (!reqItem) throw new AppError('Location change request not found', 404);
+
+    await pool.query(
+      `UPDATE pro_location_change_requests SET status = 'REJECTED', admin_reason = $1, updated_at = NOW() WHERE id = $2`,
+      [reason || 'Location change rejected by admin', requestId]
+    );
+
+    await pool.query(
+      `UPDATE professional_profiles
+       SET requested_location = NULL, location_change_status = 'REJECTED', location_change_reason = $1, updated_at = NOW()
+       WHERE user_id = $2`,
+      [reason || 'Location change rejected by admin', reqItem.pro_id]
+    );
+
+    res.json({ success: true, message: 'Location change request rejected' });
   } catch (err) { next(err); }
 });
 

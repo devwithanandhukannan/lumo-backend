@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { pool } from '@lumo/database';
-import { errorHandler } from '@lumo/common';
+import { errorHandler, AppError } from '@lumo/common';
+import { randomUUID } from 'crypto';
 
 dotenv.config();
 
@@ -69,6 +70,21 @@ app.get('/api/v1/catalog/categories', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+app.post('/api/v1/catalog/categories', async (req, res, next) => {
+  try {
+    const { name, description, iconUrl } = req.body;
+    if (!name) throw new AppError('Category name is required', 400);
+
+    const id = `cat-${randomUUID().slice(0, 8)}`;
+    const result = await pool.query(
+      `INSERT INTO service_categories (id, name, description, icon_url) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [id, name, description || '', iconUrl || null]
+    );
+
+    res.status(201).json({ success: true, data: result.rows[0], message: 'Service category created successfully' });
+  } catch (err) { next(err); }
+});
+
 app.get('/api/v1/catalog/services', async (req, res, next) => {
   try {
     await ensureCatalogSchema();
@@ -84,6 +100,43 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
 
     const services = await pool.query(query, params);
     res.json({ success: true, data: services.rows });
+  } catch (err) { next(err); }
+});
+
+app.post('/api/v1/catalog/services', async (req, res, next) => {
+  try {
+    const { categoryId, name, description, basePrice, durationMinutes } = req.body;
+    if (!name || !categoryId || basePrice === undefined) {
+      throw new AppError('Name, categoryId, and basePrice are required', 400);
+    }
+
+    const id = `srv-${randomUUID().slice(0, 8)}`;
+    const result = await pool.query(
+      `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id, categoryId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10)]
+    );
+
+    const fullService = await pool.query(
+      `SELECT s.*, c.name as category_name FROM services s JOIN service_categories c ON s.category_id = c.id WHERE s.id = $1`,
+      [id]
+    );
+
+    console.log(`✨ [ADMIN-SERVICE-ADDED] Created service "${name}" (Price: ₹${basePrice})`);
+
+    res.status(201).json({
+      success: true,
+      data: fullService.rows[0],
+      message: 'New service created and listed for professionals'
+    });
+  } catch (err) { next(err); }
+});
+
+app.delete('/api/v1/catalog/services/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await pool.query('UPDATE services SET is_active = false WHERE id = $1', [id]);
+    res.json({ success: true, message: 'Service removed from catalog' });
   } catch (err) { next(err); }
 });
 

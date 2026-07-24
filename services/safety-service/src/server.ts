@@ -82,12 +82,19 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
   try {
     const pros = await pool.query(
       `SELECT u.id as user_id, u.full_name, u.email, u.phone_number, u.gender, u.email_verified, u.phone_verified,
-              p.id as profile_id, p.verification_status, p.documents, p.face_verification_url, p.face_verified,
-              p.coverage_radius_km, p.assigned_region, p.is_online, p.rating_avg, p.created_at
+              COALESCE(p.id, CONCAT('pro-', u.id)) as profile_id,
+              COALESCE(p.verification_status, 'PENDING') as verification_status,
+              COALESCE(p.documents, '{}'::jsonb) as documents,
+              p.face_verification_url, p.face_verified,
+              COALESCE(p.coverage_radius_km, 50.00) as coverage_radius_km,
+              COALESCE(p.assigned_region, 'Bangalore') as assigned_region,
+              COALESCE(p.is_online, false) as is_online,
+              COALESCE(p.rating_avg, 5.0) as rating_avg,
+              u.created_at
        FROM users u
-       JOIN professional_profiles p ON u.id = p.user_id
+       LEFT JOIN professional_profiles p ON u.id = p.user_id
        WHERE u.role = 'PROFESSIONAL'
-       ORDER BY CASE WHEN p.verification_status = 'PENDING' THEN 1 ELSE 2 END, p.created_at DESC`
+       ORDER BY CASE WHEN COALESCE(p.verification_status, 'PENDING') = 'PENDING' THEN 1 ELSE 2 END, u.created_at DESC`
     );
 
     res.json({ success: true, data: pros.rows });

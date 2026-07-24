@@ -13,48 +13,11 @@ const PORT = process.env.PORT || 5007;
 app.use(cors());
 app.use(express.json());
 
-async function ensureSafetySchema() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS sos_alerts (
-          id VARCHAR(50) PRIMARY KEY,
-          booking_id VARCHAR(50),
-          triggered_by_user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          trigger_latitude NUMERIC(10,8),
-          trigger_longitude NUMERIC(11,8),
-          status VARCHAR(20) DEFAULT 'ACTIVE',
-          notes TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW(),
-          resolved_at TIMESTAMPTZ
-      );
-
-      CREATE TABLE IF NOT EXISTS system_settings (
-          setting_key VARCHAR(100) PRIMARY KEY,
-          setting_value TEXT NOT NULL,
-          description TEXT,
-          updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      INSERT INTO system_settings (setting_key, setting_value, description) VALUES
-      ('SOS_AUTO_DISPATCH_EMERGENCY', 'true', 'Auto dispatch emergency contacts on SOS trigger'),
-      ('DEFAULT_COVERAGE_RADIUS_KM', '50', 'Default operational coverage radius for professionals in km'),
-      ('PRO_VERIFICATION_REQUIRE_POLICE_PDF', 'true', 'Require mandatory police background clearance PDF upload'),
-      ('PLATFORM_COMMISSION_PERCENTAGE', '10', 'Platform commission percentage per completed booking')
-      ON CONFLICT (setting_key) DO NOTHING;
-    `);
-  } catch (err: any) {
-    console.warn('⚠️ Safety schema warning:', err.message);
-  }
-}
-
-ensureSafetySchema();
-
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Safety Control Center Service' }));
 
 // 1. Trigger Emergency SOS
 app.post('/api/v1/safety/sos/trigger', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
-    await ensureSafetySchema();
     const userId = req.user!.userId;
     const { bookingId, latitude, longitude, notes } = req.body;
     const sosId = `sos-${randomUUID().slice(0, 8)}`;
@@ -73,7 +36,6 @@ app.post('/api/v1/safety/sos/trigger', authenticateToken, async (req: Authentica
 // 2. Fetch Active SOS Alerts for Admin
 app.get('/api/v1/admin/safety/sos', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
-    await ensureSafetySchema();
     const alerts = await pool.query(
       `SELECT s.*, u.full_name as user_name, u.phone_number as user_phone, u.role as user_role
        FROM sos_alerts s
@@ -118,65 +80,89 @@ app.post('/api/v1/admin/safety/sos/:sosId/resolve', authenticateToken, requireRo
 // 4. Admin: Fetch All Professionals & Document Verification Applications
 app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
-    await ensureSafetySchema();
     const pros = await pool.query(
       `SELECT u.id as user_id, u.full_name, u.email, u.phone_number, u.gender, u.email_verified, u.phone_verified,
-              COALESCE(p.id, CONCAT('pro-', u.id)) as profile_id,
-              COALESCE(p.verification_status, 'PENDING') as verification_status,
-              p.verification_notes,
-              COALESCE(p.documents, '{}'::jsonb) as documents,
-              COALESCE(p.face_verification_url, u.avatar_url) as face_verification_url,
-              p.face_verified,
-              COALESCE(p.coverage_radius_km, 50.00) as coverage_radius_km,
-              COALESCE(p.service_area, p.assigned_region, u.service_area) as service_area,
-              COALESCE(p.assigned_region, p.service_area, u.service_area) as assigned_region,
-              p.requested_location,
-              p.location_change_status,
-              p.location_change_reason,
-              COALESCE(p.is_online, false) as is_online,
-              COALESCE(p.rating_avg, 5.0) as rating_avg,
-              u.created_at
+              p.id as profile_id, p.verification_status, p.documents, p.face_verification_url, p.face_verified,
+              p.coverage_radius_km, p.assigned_region, p.is_online, p.rating_avg, p.created_at
        FROM users u
-       LEFT JOIN professional_profiles p ON u.id = p.user_id
+       JOIN professional_profiles p ON u.id = p.user_id
        WHERE u.role = 'PROFESSIONAL'
-       ORDER BY CASE WHEN COALESCE(p.verification_status, 'PENDING') = 'PENDING' THEN 1 ELSE 2 END, u.created_at DESC`
+       ORDER BY CASE WHEN p.verification_status = 'PENDING' THEN 1 ELSE 2 END, p.created_at DESC`
     );
 
     res.json({ success: true, data: pros.rows });
   } catch (err) { next(err); }
 });
 
-// 5. Admin: Verify / Approve / Suspend / Reject Professional (with Rejection Reason)
+// 5. Admin: Verify / Approve / Suspend / Reject Professional
 app.post('/api/v1/admin/pro/:userId/verify', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const { status, notes, rejectionReason } = req.body;
+    const { status, notes } = req.body;
 
     if (!['APPROVED', 'SUSPENDED', 'REJECTED', 'PENDING'].includes(status)) {
       throw new AppError('Invalid verification status', 400);
     }
 
-    const noteContent = notes || rejectionReason || (status === 'REJECTED' ? 'Documents or selfie photo require re-verification' : null);
-
     const proRes = await pool.query(
       `UPDATE professional_profiles
-       SET verification_status = $1::varchar,
+       SET verification_status = $1,
            verification_notes = $2,
-           is_online = CASE WHEN $1::varchar != 'APPROVED' THEN false ELSE is_online END,
+           is_online = CASE WHEN $1 != 'APPROVED' THEN false ELSE is_online END,
            updated_at = NOW()
        WHERE user_id = $3 RETURNING *`,
-      [status, noteContent, userId]
+      [status, notes || null, userId]
     );
 
     if (proRes.rows.length === 0) throw new AppError('Professional profile not found', 404);
-
-    console.log(`🛡️ [ADMIN-VERIFY] Updated pro ${userId} status to ${status} (Reason: ${noteContent || 'N/A'})`);
 
     res.json({
       success: true,
       message: `Professional status updated to ${status}`,
       data: proRes.rows[0],
     });
+  } catch (err) { next(err); }
+});
+
+// 6. Admin: Update Professional Coverage Radius (Default 50km) & Region
+app.put('/api/v1/admin/pro/:userId/coverage', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const { coverageRadiusKm, assignedRegion } = req.body;
+
+    const updateRes = await pool.query(
+      `UPDATE professional_profiles
+       SET coverage_radius_km = COALESCE($1, coverage_radius_km),
+           assigned_region = COALESCE($2, assigned_region),
+           updated_at = NOW()
+       WHERE user_id = $3 RETURNING *`,
+      [coverageRadiusKm ? parseFloat(coverageRadiusKm) : null, assignedRegion || null, userId]
+    );
+
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) { next(err); }
+});
+
+// 7. Admin System Settings
+app.get('/api/v1/admin/settings', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const settings = await pool.query('SELECT setting_key, setting_value, description, updated_at FROM system_settings');
+    res.json({ success: true, data: settings.rows });
+  } catch (err) { next(err); }
+});
+
+app.put('/api/v1/admin/settings/:key', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+
+    const updateRes = await pool.query(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW() RETURNING *`,
+      [key, value]
+    );
+
+    res.json({ success: true, data: updateRes.rows[0] });
   } catch (err) { next(err); }
 });
 
@@ -204,7 +190,6 @@ app.delete('/api/v1/admin/pro/:userId', authenticateToken, requireRoles(['ADMIN'
 // 5b. Admin: Fetch Pending Location Change Requests
 app.get('/api/v1/admin/pro/location-requests', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
-    await ensureSafetySchema();
     const requests = await pool.query(
       `SELECT r.*, u.full_name as pro_name, u.phone_number as pro_phone, u.email as pro_email
        FROM pro_location_change_requests r
@@ -271,6 +256,87 @@ app.post('/api/v1/admin/pro/location-requests/:requestId/reject', authenticateTo
   } catch (err) { next(err); }
 });
 
+// 5e. Admin: List All Custom Service Requests
+app.get('/api/v1/admin/pro/service-requests', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const requests = await pool.query(
+      `SELECT r.*, u.full_name as pro_name, u.email as pro_email, u.phone_number as pro_phone
+       FROM pending_service_requests r
+       JOIN users u ON r.pro_id = u.id
+       ORDER BY CASE WHEN r.status = 'PENDING_ADMIN_APPROVAL' THEN 1 ELSE 2 END, r.created_at DESC`
+    );
+    res.json({ success: true, data: requests.rows });
+  } catch (err) { next(err); }
+});
+
+// 5f. Admin: Approve Custom Service Request
+app.post('/api/v1/admin/pro/service-requests/:requestId/approve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const reqRes = await pool.query('SELECT * FROM pending_service_requests WHERE id = $1', [requestId]);
+    const reqItem = reqRes.rows[0];
+    if (!reqItem) throw new AppError('Service request not found', 404);
+
+    // 1. Ensure default category exists
+    let catRes = await pool.query('SELECT id FROM service_categories LIMIT 1');
+    let categoryId = catRes.rows[0]?.id;
+    if (!categoryId) {
+      categoryId = 'cat-custom-general';
+      await pool.query(
+        `INSERT INTO service_categories (id, name, description)
+         VALUES ($1, 'Custom Services', 'Partner custom created services')
+         ON CONFLICT (id) DO NOTHING`,
+        [categoryId]
+      );
+    }
+
+    // 2. Create service in catalog
+    const serviceId = `srv-${randomUUID().slice(0, 8)}`;
+    await pool.query(
+      `INSERT INTO services (id, category_id, name, description, base_price)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [serviceId, categoryId, reqItem.service_name, reqItem.description || '', reqItem.suggested_price || 499.00]
+    );
+
+    // 3. Link service to professional with custom price
+    await pool.query(
+      `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, is_active)
+       VALUES ($1, $2, $3, $4, true)
+       ON CONFLICT (pro_id, service_id) DO UPDATE SET custom_price = $4, is_active = true`,
+      [`pos-${randomUUID().slice(0, 8)}`, reqItem.pro_id, serviceId, reqItem.suggested_price || 499.00]
+    );
+
+    // 4. Update request status to APPROVED
+    await pool.query(
+      `UPDATE pending_service_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
+      [requestId]
+    );
+
+    console.log(`✅ [ADMIN-CUSTOM-SERVICE-APPROVED] Approved custom service "${reqItem.service_name}" for pro ${reqItem.pro_id}`);
+
+    res.json({ success: true, message: `Custom service "${reqItem.service_name}" approved and published to catalog!` });
+  } catch (err) { next(err); }
+});
+
+// 5g. Admin: Reject Custom Service Request
+app.post('/api/v1/admin/pro/service-requests/:requestId/reject', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const { reason } = req.body;
+
+    const reqRes = await pool.query('SELECT * FROM pending_service_requests WHERE id = $1', [requestId]);
+    const reqItem = reqRes.rows[0];
+    if (!reqItem) throw new AppError('Service request not found', 404);
+
+    await pool.query(
+      `UPDATE pending_service_requests SET status = 'REJECTED', admin_notes = $1, updated_at = NOW() WHERE id = $2`,
+      [reason || 'Service request rejected by admin', requestId]
+    );
+
+    res.json({ success: true, message: 'Custom service request rejected' });
+  } catch (err) { next(err); }
+});
+
 // 6. Admin: Update Professional Coverage Radius (Default 50km) & Region
 app.put('/api/v1/admin/pro/:userId/coverage', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
@@ -294,7 +360,6 @@ app.put('/api/v1/admin/pro/:userId/coverage', authenticateToken, requireRoles(['
 // 7. Admin System Settings
 app.get('/api/v1/admin/settings', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
-    await ensureSafetySchema();
     const settings = await pool.query('SELECT setting_key, setting_value, description, updated_at FROM system_settings');
     res.json({ success: true, data: settings.rows });
   } catch (err) { next(err); }

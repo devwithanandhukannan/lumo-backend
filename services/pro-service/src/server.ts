@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -208,6 +208,30 @@ app.post('/api/v1/pro/offered-services', authenticateToken, async (req: Authenti
   } catch (err) { next(err); }
 });
 
+// 4b. Instant Edit Custom Price (No Admin Verification Required)
+app.post('/api/v1/pro/offered-services/update-price', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { serviceId, customPrice } = req.body;
+    if (!serviceId) throw new AppError('Service ID required', 400);
+
+    const proId = req.user!.userId;
+    const priceNum = customPrice !== undefined && customPrice !== null ? parseFloat(customPrice) : null;
+
+    const result = await pool.query(
+      `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, is_active)
+       VALUES ($1, $2, $3, $4, true)
+       ON CONFLICT (pro_id, service_id) DO UPDATE SET custom_price = $4, updated_at = NOW() RETURNING *`,
+      [`pos-${randomUUID().slice(0, 8)}`, proId, serviceId, priceNum]
+    );
+
+    res.json({
+      success: true,
+      message: 'Custom rate updated instantly!',
+      data: result.rows[0],
+    });
+  } catch (err) { next(err); }
+});
+
 // 5. Request New Custom Service (Pending Admin Approval)
 app.post('/api/v1/pro/request-service', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -253,8 +277,20 @@ app.post('/api/v1/pro/service-request', authenticateToken, async (req: Authentic
   } catch (err) { next(err); }
 });
 
+// 5b. Fetch My Custom Service Requests
+app.get('/api/v1/pro/custom-services/my-requests', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const proId = req.user!.userId;
+    const result = await pool.query(
+      `SELECT * FROM pending_service_requests WHERE pro_id = $1 ORDER BY created_at DESC`,
+      [proId]
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) { next(err); }
+});
+
 // 6. Toggle Duty Status (Online / Offline)
-app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+const handleDutyStatusToggle = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const { isOnline, latitude, longitude } = req.body;
     const proId = req.user!.userId;
@@ -284,31 +320,38 @@ app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedR
       data: updateRes.rows[0],
     });
   } catch (err) { next(err); }
-});
+};
+
+app.put('/api/v1/pro/duty-status', authenticateToken, handleDutyStatusToggle as any);
+app.post('/api/v1/pro/duty-status', authenticateToken, handleDutyStatusToggle as any);
+app.put('/api/v1/pro/status', authenticateToken, handleDutyStatusToggle as any);
+app.post('/api/v1/pro/status', authenticateToken, handleDutyStatusToggle as any);
 
 // 7. Request Location Change / Update (Pending Admin Approval)
 app.post('/api/v1/pro/location-change-request', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
-    const { requestedLocation, reason } = req.body;
+    const { requestedLocation, reason, latitude, longitude } = req.body;
     if (!requestedLocation) throw new AppError('Requested location is required', 400);
 
     const proId = req.user!.userId;
     const requestId = `loc-req-${randomUUID().slice(0, 8)}`;
+    const lat = latitude ? parseFloat(latitude) : null;
+    const lng = longitude ? parseFloat(longitude) : null;
 
     const proRes = await pool.query('SELECT service_area, assigned_region FROM professional_profiles WHERE user_id = $1', [proId]);
     const currentLoc = proRes.rows[0]?.service_area || proRes.rows[0]?.assigned_region || 'Not set';
 
     await pool.query(
-      `INSERT INTO pro_location_change_requests (id, pro_id, current_location, requested_location, status)
-       VALUES ($1, $2, $3, $4, 'PENDING_ADMIN_APPROVAL')`,
-      [requestId, proId, currentLoc, requestedLocation]
+      `INSERT INTO pro_location_change_requests (id, pro_id, current_location, requested_location, latitude, longitude, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'PENDING_ADMIN_APPROVAL')`,
+      [requestId, proId, currentLoc, requestedLocation, lat, lng]
     );
 
     await pool.query(
       `UPDATE professional_profiles
-       SET requested_location = $1, location_change_status = 'PENDING_ADMIN_APPROVAL', location_change_reason = $2, updated_at = NOW()
-       WHERE user_id = $3`,
-      [requestedLocation, reason || null, proId]
+       SET requested_location = $1, requested_latitude = $2, requested_longitude = $3, location_change_status = 'PENDING_ADMIN_APPROVAL', location_change_reason = $4, updated_at = NOW()
+       WHERE user_id = $5`,
+      [requestedLocation, lat, lng, reason || null, proId]
     );
 
     res.status(201).json({

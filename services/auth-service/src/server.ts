@@ -244,10 +244,12 @@ app.post('/api/v1/auth/pro/register', async (req: Request, res: Response, next: 
 app.post('/api/v1/auth/pro/register-phone', async (req: Request, res: Response, next: NextFunction) => {
   const client = await pool.connect();
   try {
-    const { phoneNumber, fullName, age, email, gender = 'OTHER', serviceArea, location } = req.body;
+    const { phoneNumber, fullName, age, email, gender = 'OTHER', serviceArea, location, latitude, longitude } = req.body;
     if (!phoneNumber || !fullName) throw new AppError('Phone number and full name required', 400);
 
     const targetLocation = serviceArea || location || null;
+    const lat = latitude ? parseFloat(latitude) : null;
+    const lng = longitude ? parseFloat(longitude) : null;
 
     let userRes = await client.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
     let user = userRes.rows[0];
@@ -257,9 +259,9 @@ app.post('/api/v1/auth/pro/register-phone', async (req: Request, res: Response, 
     if (!user) {
       const userId = `usr-${randomUUID().slice(0, 8)}`;
       const insertRes = await client.query(
-        `INSERT INTO users (id, phone_number, full_name, email, age, gender, role, service_area, phone_verified, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, 'PROFESSIONAL', $7, true, true) RETURNING *`,
-        [userId, phoneNumber, fullName, email || null, age || null, gender, targetLocation]
+        `INSERT INTO users (id, phone_number, full_name, email, age, gender, role, service_area, latitude, longitude, phone_verified, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, 'PROFESSIONAL', $7, $8, $9, true, true) RETURNING *`,
+        [userId, phoneNumber, fullName, email || null, age || null, gender, targetLocation, lat, lng]
       );
       user = insertRes.rows[0];
     } else {
@@ -270,10 +272,12 @@ app.post('/api/v1/auth/pro/register-phone', async (req: Request, res: Response, 
              age = COALESCE($3, age),
              gender = COALESCE($4, gender),
              service_area = COALESCE($5, service_area),
+             latitude = COALESCE($6, latitude),
+             longitude = COALESCE($7, longitude),
              role = 'PROFESSIONAL',
              updated_at = NOW()
-         WHERE id = $6 RETURNING *`,
-        [fullName, email || null, age || null, gender, targetLocation, user.id]
+         WHERE id = $8 RETURNING *`,
+        [fullName, email || null, age || null, gender, targetLocation, lat, lng, user.id]
       );
       user = updateRes.rows[0];
     }
@@ -283,17 +287,21 @@ app.post('/api/v1/auth/pro/register-phone', async (req: Request, res: Response, 
 
     if (!pro) {
       const insertProRes = await client.query(
-        `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region, service_area)
-         VALUES ($1, $2, 'PENDING', 50.00, $3, $3) RETURNING *`,
-        [`pro-${randomUUID().slice(0, 8)}`, user.id, targetLocation]
+        `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region, service_area, latitude, longitude)
+         VALUES ($1, $2, 'PENDING', 50.00, $3, $3, $4, $5) RETURNING *`,
+        [`pro-${randomUUID().slice(0, 8)}`, user.id, targetLocation, lat, lng]
       );
       pro = insertProRes.rows[0];
-    } else if (targetLocation) {
+    } else {
       const updateProRes = await client.query(
         `UPDATE professional_profiles
-         SET service_area = $1, assigned_region = $1, updated_at = NOW()
-         WHERE user_id = $2 RETURNING *`,
-        [targetLocation, user.id]
+         SET service_area = COALESCE($1, service_area),
+             assigned_region = COALESCE($1, assigned_region),
+             latitude = COALESCE($2, latitude),
+             longitude = COALESCE($3, longitude),
+             updated_at = NOW()
+         WHERE user_id = $4 RETURNING *`,
+        [targetLocation, lat, lng, user.id]
       );
       pro = updateProRes.rows[0];
     }

@@ -12,15 +12,21 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5003;
 
-// Ensure backend/proff_cert folder exists
+// Ensure both local proff_cert and root backend/proff_cert folders exist
 const proffCertDir = path.join(process.cwd(), 'proff_cert');
+const rootCertDir = path.resolve(process.cwd(), '../../proff_cert');
+
 if (!fs.existsSync(proffCertDir)) {
   fs.mkdirSync(proffCertDir, { recursive: true });
+}
+if (!fs.existsSync(rootCertDir)) {
+  fs.mkdirSync(rootCertDir, { recursive: true });
 }
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use('/proff_cert', express.static(proffCertDir));
+app.use('/proff_cert', express.static(rootCertDir));
 
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Pro Service' }));
 
@@ -41,7 +47,8 @@ app.get('/api/v1/pro/health', authenticateToken, async (req: AuthenticatedReques
         cancellationRate: parseFloat(pro.cancellation_rate),
         verificationStatus: pro.verification_status,
         coverageRadiusKm: parseFloat(pro.coverage_radius_km || '50.00'),
-        assignedRegion: pro.assigned_region || 'Bangalore',
+        assignedRegion: pro.assigned_region || pro.service_area || 'Kochi, Kerala',
+        serviceArea: pro.service_area || 'Kochi, Kerala',
         isOnline: pro.is_online,
       },
     });
@@ -51,7 +58,7 @@ app.get('/api/v1/pro/health', authenticateToken, async (req: AuthenticatedReques
 // 2. Fetch Full Professional Profile & Documents
 app.get('/api/v1/pro/profile', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
-    const userRes = await pool.query('SELECT id, phone_number, email, full_name, role, gender, avatar_url, email_verified, phone_verified FROM users WHERE id = $1', [req.user!.userId]);
+    const userRes = await pool.query('SELECT id, phone_number, email, full_name, role, gender, avatar_url, service_area, email_verified, phone_verified FROM users WHERE id = $1', [req.user!.userId]);
     const user = userRes.rows[0];
     if (!user) throw new AppError('User not found', 404);
 
@@ -59,11 +66,11 @@ app.get('/api/v1/pro/profile', authenticateToken, async (req: AuthenticatedReque
     const pro = proRes.rows[0];
 
     const servicesRes = await pool.query(
-      `SELECT pos.*, s.name as service_name, s.base_price, c.name as category_name
+      `SELECT pos.*, s.name as service_name, s.base_price, s.description, c.name as category_name
        FROM pro_offered_services pos
        JOIN services s ON pos.service_id = s.id
        JOIN service_categories c ON s.category_id = c.id
-       WHERE pos.pro_id = $1`,
+       WHERE pos.pro_id = $1 AND pos.is_active = true`,
       [user.id]
     );
 
@@ -76,6 +83,7 @@ app.get('/api/v1/pro/profile', authenticateToken, async (req: AuthenticatedReque
           coverage_radius_km: parseFloat(pro.coverage_radius_km || '50.00'),
           rating_avg: parseFloat(pro.rating_avg),
           account_health_score: parseFloat(pro.account_health_score),
+          service_area: pro.service_area || user.service_area || 'Kochi, Kerala',
         } : null,
         offeredServices: servicesRes.rows,
       },
@@ -101,7 +109,6 @@ app.post('/api/v1/pro/documents', authenticateToken, async (req: AuthenticatedRe
       updatedAt: new Date().toISOString(),
     };
 
-    // Updating documents places account into PENDING re-verification review state
     if (!pro) {
       const insertRes = await pool.query(
         `INSERT INTO professional_profiles (id, user_id, verification_status, documents, face_verification_url, face_verified, is_online)
@@ -132,7 +139,7 @@ app.post('/api/v1/pro/documents', authenticateToken, async (req: AuthenticatedRe
   } catch (err) { next(err); }
 });
 
-// 3b. Upload File to Backend proff_cert Folder
+// 3b. Upload File to Backend proff_cert Folders
 app.post('/api/v1/pro/upload-doc', async (req, res, next) => {
   try {
     const { fileName, fileData, docType } = req.body;
@@ -140,19 +147,23 @@ app.post('/api/v1/pro/upload-doc', async (req, res, next) => {
 
     const cleanName = (fileName || 'document.pdf').replaceAll(/[^a-zA-Z0-9_.-]/g, '_');
     const savedFileName = `${Date.now()}_${cleanName}`;
-    const savePath = path.join(proffCertDir, savedFileName);
+
+    const savePath1 = path.join(proffCertDir, savedFileName);
+    const savePath2 = path.join(rootCertDir, savedFileName);
 
     const buffer = Buffer.from(fileData.replace(/^data:.*?;base64,/, ''), 'base64');
-    fs.writeFileSync(savePath, buffer);
 
-    console.log(`📄 [DOCUMENT-SAVED] Stored ${docType || 'doc'} in proff_cert folder: ${savedFileName}`);
+    fs.writeFileSync(savePath1, buffer);
+    try { fs.writeFileSync(savePath2, buffer); } catch (_) {}
+
+    console.log(`📄 [DOCUMENT-SAVED] Stored ${docType || 'doc'} in proff_cert folders: ${savedFileName}`);
 
     res.json({
       success: true,
       message: 'Document stored successfully in proff_cert folder',
       fileUrl: `/proff_cert/${savedFileName}`,
       savedFileName,
-      localPath: savePath,
+      localPath: savePath1,
     });
   } catch (err) { next(err); }
 });
@@ -160,7 +171,7 @@ app.post('/api/v1/pro/upload-doc', async (req, res, next) => {
 // 4. Save Offered Services & Custom Pricing
 app.post('/api/v1/pro/offered-services', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
-    const { services } = req.body; // Array of { serviceId, customPrice }
+    const { services } = req.body;
     if (!Array.isArray(services)) throw new AppError('Services array required', 400);
 
     const proId = req.user!.userId;
@@ -174,126 +185,66 @@ app.post('/api/v1/pro/offered-services', authenticateToken, async (req: Authenti
       );
     }
 
-    const updated = await pool.query(
-      `SELECT pos.*, s.name as service_name, s.base_price
-       FROM pro_offered_services pos
-       JOIN services s ON pos.service_id = s.id
-       WHERE pos.pro_id = $1`,
-      [proId]
-    );
-
-    res.json({ success: true, data: updated.rows });
+    res.json({ success: true, message: 'Offered services and custom rates saved' });
   } catch (err) { next(err); }
 });
 
-// 5. Toggle Online/Offline Duty (Requires APPROVED Verification Status)
-app.post('/api/v1/pro/status', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+// 5. Request New Custom Service (Pending Admin Approval)
+app.post('/api/v1/pro/request-service', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { serviceName, description, suggestedPrice } = req.body;
+    if (!serviceName) throw new AppError('Service name required', 400);
+
+    const requestId = `svc-req-${randomUUID().slice(0, 8)}`;
+    const proId = req.user!.userId;
+
+    const result = await pool.query(
+      `INSERT INTO pending_service_requests (id, pro_id, service_name, description, suggested_price, status)
+       VALUES ($1, $2, $3, $4, $5, 'PENDING_ADMIN_APPROVAL') RETURNING *`,
+      [requestId, proId, serviceName, description || '', suggestedPrice ? parseFloat(suggestedPrice) : null]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'New service request submitted for Super Admin approval',
+      data: result.rows[0],
+    });
+  } catch (err) { next(err); }
+});
+
+// 6. Toggle Duty Status (Online / Offline)
+app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
     const { isOnline, latitude, longitude } = req.body;
+    const proId = req.user!.userId;
 
-    const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [req.user!.userId]);
+    const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [proId]);
     const pro = proRes.rows[0];
 
     if (!pro) throw new AppError('Professional profile not found', 404);
-
-    if (isOnline && pro.verification_status !== 'APPROVED') {
-      throw new AppError(`Cannot go online. Account verification status is ${pro.verification_status}. Admin review required.`, 403);
+    if (pro.verification_status !== 'APPROVED') {
+      throw new AppError('Cannot go online. Your profile verification status is PENDING or SUSPENDED.', 403);
     }
 
-    const locationJson = (latitude && longitude) ? JSON.stringify({ latitude, longitude, updatedAt: new Date().toISOString() }) : pro.current_location;
+    const locJson = (latitude !== undefined && longitude !== undefined)
+      ? JSON.stringify({ lat: latitude, lng: longitude, updatedAt: new Date().toISOString() })
+      : pro.current_location;
 
-    await pool.query(
-      `UPDATE professional_profiles SET is_online = $1, current_location = COALESCE($2, current_location), updated_at = NOW() WHERE user_id = $3`,
-      [Boolean(isOnline), locationJson, req.user!.userId]
+    const updateRes = await pool.query(
+      `UPDATE professional_profiles
+       SET is_online = $1, current_location = $2, updated_at = NOW()
+       WHERE user_id = $3 RETURNING *`,
+      [Boolean(isOnline), locJson, proId]
     );
 
-    res.json({ success: true, isOnline: Boolean(isOnline), message: `Status updated to ${isOnline ? 'ONLINE' : 'OFFLINE'}` });
-  } catch (err) { next(err); }
-});
-
-// 6. Get Job Invites (pending bookings within pro's coverage area)
-app.get('/api/v1/pro/job-invites', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [req.user!.userId]);
-    const pro = proRes.rows[0];
-    if (!pro) throw new AppError('Professional profile not found', 404);
-
-    // Fetch REQUESTED bookings where pro hasn't been assigned yet
-    const bookingsRes = await pool.query(
-      `SELECT b.*, s.name as service_name, s.base_price,
-              u.full_name as customer_name, u.phone_number as customer_phone
-       FROM bookings b
-       JOIN services s ON b.service_id = s.id
-       JOIN users u ON b.customer_id = u.id
-       WHERE b.status = 'REQUESTED'
-         AND b.pro_id IS NULL
-       ORDER BY b.created_at DESC
-       LIMIT 20`,
-      []
-    );
-
-    res.json({ success: true, data: bookingsRes.rows });
-  } catch (err) { next(err); }
-});
-
-// 7. Request a Custom Service (pending admin approval)
-app.post('/api/v1/pro/service-request', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const { serviceName, description, suggestedPrice, categoryId } = req.body;
-    if (!serviceName) throw new AppError('Service name is required', 400);
-
-    const id = `svc-req-${randomUUID().slice(0, 8)}`;
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS pending_service_requests (
-          id VARCHAR(50) PRIMARY KEY,
-          pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          service_name VARCHAR(100) NOT NULL,
-          description TEXT,
-          suggested_price NUMERIC(10,2),
-          category_id VARCHAR(50),
-          status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
-          admin_notes TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW(),
-          updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `).catch(() => {});
-
-    const result = await pool.query(
-      `INSERT INTO pending_service_requests (id, pro_id, service_name, description, suggested_price, category_id)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [id, req.user!.userId, serviceName, description || '', suggestedPrice || null, categoryId || null]
-    );
-
-    res.status(201).json({ success: true, data: result.rows[0], message: 'Service request submitted for admin review.' });
-  } catch (err) { next(err); }
-});
-
-// 8. Get Pro's custom service requests
-app.get('/api/v1/pro/service-requests', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS pending_service_requests (
-          id VARCHAR(50) PRIMARY KEY,
-          pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          service_name VARCHAR(100) NOT NULL,
-          description TEXT,
-          suggested_price NUMERIC(10,2),
-          category_id VARCHAR(50),
-          status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
-          admin_notes TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW(),
-          updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `).catch(() => {});
-
-    const result = await pool.query(
-      `SELECT * FROM pending_service_requests WHERE pro_id = $1 ORDER BY created_at DESC`,
-      [req.user!.userId]
-    );
-    res.json({ success: true, data: result.rows });
+    res.json({
+      success: true,
+      message: `Duty status updated to ${isOnline ? 'ONLINE' : 'OFFLINE'}`,
+      data: updateRes.rows[0],
+    });
   } catch (err) { next(err); }
 });
 
 app.use(errorHandler);
 
-app.listen(PORT, '0.0.0.0', () => console.log(`👷 Pro Service running on port ${PORT}`));
+app.listen(PORT, () => console.log(`👷 Professional Service running on port ${PORT}`));

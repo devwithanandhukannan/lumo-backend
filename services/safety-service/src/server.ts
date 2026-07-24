@@ -13,11 +13,48 @@ const PORT = process.env.PORT || 5007;
 app.use(cors());
 app.use(express.json());
 
+async function ensureSafetySchema() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sos_alerts (
+          id VARCHAR(50) PRIMARY KEY,
+          booking_id VARCHAR(50),
+          triggered_by_user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          trigger_latitude NUMERIC(10,8),
+          trigger_longitude NUMERIC(11,8),
+          status VARCHAR(20) DEFAULT 'ACTIVE',
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          resolved_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS system_settings (
+          setting_key VARCHAR(100) PRIMARY KEY,
+          setting_value TEXT NOT NULL,
+          description TEXT,
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      INSERT INTO system_settings (setting_key, setting_value, description) VALUES
+      ('SOS_AUTO_DISPATCH_EMERGENCY', 'true', 'Auto dispatch emergency contacts on SOS trigger'),
+      ('DEFAULT_COVERAGE_RADIUS_KM', '50', 'Default operational coverage radius for professionals in km'),
+      ('PRO_VERIFICATION_REQUIRE_POLICE_PDF', 'true', 'Require mandatory police background clearance PDF upload'),
+      ('PLATFORM_COMMISSION_PERCENTAGE', '10', 'Platform commission percentage per completed booking')
+      ON CONFLICT (setting_key) DO NOTHING;
+    `);
+  } catch (err: any) {
+    console.warn('⚠️ Safety schema warning:', err.message);
+  }
+}
+
+ensureSafetySchema();
+
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Safety Control Center Service' }));
 
 // 1. Trigger Emergency SOS
 app.post('/api/v1/safety/sos/trigger', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
+    await ensureSafetySchema();
     const userId = req.user!.userId;
     const { bookingId, latitude, longitude, notes } = req.body;
     const sosId = `sos-${randomUUID().slice(0, 8)}`;
@@ -36,6 +73,7 @@ app.post('/api/v1/safety/sos/trigger', authenticateToken, async (req: Authentica
 // 2. Fetch Active SOS Alerts for Admin
 app.get('/api/v1/admin/safety/sos', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
+    await ensureSafetySchema();
     const alerts = await pool.query(
       `SELECT s.*, u.full_name as user_name, u.phone_number as user_phone, u.role as user_role
        FROM sos_alerts s
@@ -80,14 +118,17 @@ app.post('/api/v1/admin/safety/sos/:sosId/resolve', authenticateToken, requireRo
 // 4. Admin: Fetch All Professionals & Document Verification Applications
 app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
+    await ensureSafetySchema();
     const pros = await pool.query(
       `SELECT u.id as user_id, u.full_name, u.email, u.phone_number, u.gender, u.email_verified, u.phone_verified,
               COALESCE(p.id, CONCAT('pro-', u.id)) as profile_id,
               COALESCE(p.verification_status, 'PENDING') as verification_status,
               COALESCE(p.documents, '{}'::jsonb) as documents,
-              p.face_verification_url, p.face_verified,
+              COALESCE(p.face_verification_url, u.avatar_url) as face_verification_url,
+              p.face_verified,
               COALESCE(p.coverage_radius_km, 50.00) as coverage_radius_km,
-              COALESCE(p.assigned_region, 'Bangalore') as assigned_region,
+              COALESCE(p.service_area, p.assigned_region, 'Kochi, Kerala') as service_area,
+              COALESCE(p.assigned_region, p.service_area, 'Kochi, Kerala') as assigned_region,
               COALESCE(p.is_online, false) as is_online,
               COALESCE(p.rating_avg, 5.0) as rating_avg,
               u.created_at
@@ -141,6 +182,7 @@ app.put('/api/v1/admin/pro/:userId/coverage', authenticateToken, requireRoles(['
       `UPDATE professional_profiles
        SET coverage_radius_km = COALESCE($1, coverage_radius_km),
            assigned_region = COALESCE($2, assigned_region),
+           service_area = COALESCE($2, service_area),
            updated_at = NOW()
        WHERE user_id = $3 RETURNING *`,
       [coverageRadiusKm ? parseFloat(coverageRadiusKm) : null, assignedRegion || null, userId]
@@ -153,20 +195,23 @@ app.put('/api/v1/admin/pro/:userId/coverage', authenticateToken, requireRoles(['
 // 7. Admin System Settings
 app.get('/api/v1/admin/settings', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
+    await ensureSafetySchema();
     const settings = await pool.query('SELECT setting_key, setting_value, description, updated_at FROM system_settings');
     res.json({ success: true, data: settings.rows });
   } catch (err) { next(err); }
 });
 
-app.put('/api/v1/admin/settings/:key', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+app.put('/api/v1/admin/settings/:settingKey', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {
-    const { key } = req.params;
-    const { value } = req.body;
+    const { settingKey } = req.params;
+    const { value, description } = req.body;
 
     const updateRes = await pool.query(
-      `INSERT INTO system_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, NOW())
-       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW() RETURNING *`,
-      [key, value]
+      `INSERT INTO system_settings (setting_key, setting_value, description, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, description = COALESCE($3, system_settings.description), updated_at = NOW()
+       RETURNING *`,
+      [settingKey, value, description || null]
     );
 
     res.json({ success: true, data: updateRes.rows[0] });

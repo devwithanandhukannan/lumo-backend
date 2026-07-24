@@ -341,13 +341,22 @@ app.post('/api/v1/auth/pro/register-phone', async (req, res, next) => {
     let user = userRes.rows[0];
 
     if (user) {
+      const selectedArea = serviceArea && serviceArea.trim() !== '' ? serviceArea.trim() : 'Kochi, Kerala';
+
       const updateRes = await pool.query(
         `UPDATE users 
          SET full_name = $1, age = $2, email = COALESCE($3, email), gender = $4, service_area = $5, updated_at = NOW() 
          WHERE id = $6 RETURNING *`,
-        [fullName, age || null, email || null, gender || 'MALE', serviceArea || 'Bangalore', user.id]
+        [fullName, age || null, email || null, gender || 'MALE', selectedArea, user.id]
       );
       user = updateRes.rows[0];
+
+      await pool.query(
+        `INSERT INTO professional_profiles (id, user_id, verification_status, coverage_radius_km, assigned_region, service_area)
+         VALUES ($1, $2, 'PENDING', 50.00, $3, $3)
+         ON CONFLICT (user_id) DO UPDATE SET assigned_region = $3, service_area = $3, updated_at = NOW()`,
+        [`pro-${randomUUID().slice(0, 8)}`, user.id, selectedArea]
+      );
     } else {
       const userId = `usr-${randomUUID().slice(0, 8)}`;
       const insertRes = await pool.query(

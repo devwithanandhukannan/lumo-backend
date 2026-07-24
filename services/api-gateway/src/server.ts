@@ -39,7 +39,7 @@ app.use('/api/v1/safety', proxy(SAFETY_SERVICE_URL, { proxyReqPathResolver: (req
 app.use('/api/v1/admin', proxy(SAFETY_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/admin${req.url}` }));
 
 const startServer = (targetPort: number) => {
-  const server = app.listen(targetPort, () => {
+  const server = app.listen(targetPort, '0.0.0.0', () => {
     PORT = targetPort;
     console.log(`=======================================================`);
     console.log(`🌐 LUMO API Gateway running on port ${PORT}`);

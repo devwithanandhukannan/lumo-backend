@@ -36,6 +36,24 @@ const firebaseLoginSchema = z.object({
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
 });
 
+// NEW: Pro registration with phone number
+const registerProPhoneSchema = z.object({
+  phoneNumber: z.string().min(10),
+  fullName: z.string().min(2),
+  age: z.union([z.string(), z.number()]),
+  email: z.string().email().optional().or(z.literal('')),
+  gender: z.enum(['MALE', 'FEMALE', 'OTHER']).default('OTHER'),
+  serviceArea: z.string().optional(),
+});
+
+// NEW: Complete customer profile
+const completeCustomerProfileSchema = z.object({
+  fullName: z.string().min(2),
+  age: z.union([z.string(), z.number()]),
+  sex: z.enum(['MALE', 'FEMALE', 'OTHER']),
+  email: z.string().email().optional().or(z.literal('')),
+});
+
 router.post('/otp/send', validateRequest(sendOtpSchema), (req, res, next) => authController.sendOTP(req, res, next));
 router.post('/otp/verify', validateRequest(verifyOtpSchema), (req, res, next) => authController.verifyOTP(req, res, next));
 router.post('/firebase-login', validateRequest(firebaseLoginSchema), (req, res, next) => authController.firebaseLogin(req, res, next));
@@ -43,5 +61,9 @@ router.post('/oauth/google', validateRequest(oauthSchema), (req, res, next) => a
 router.post('/oauth/apple', validateRequest(oauthSchema), (req, res, next) => authController.appleOAuth(req, res, next));
 router.post('/token/refresh', validateRequest(refreshTokenSchema), (req, res, next) => authController.refreshToken(req, res, next));
 router.post('/logout', authenticateToken, (req, res, next) => authController.logout(req, res, next));
+
+// NEW routes
+router.post('/pro/register-phone', validateRequest(registerProPhoneSchema), (req, res, next) => authController.registerProWithPhone(req, res, next));
+router.post('/customer/complete-profile', authenticateToken, validateRequest(completeCustomerProfileSchema), (req, res, next) => authController.completeCustomerProfile(req as any, res, next));
 
 export default router;

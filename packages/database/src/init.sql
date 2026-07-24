@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
     full_name VARCHAR(100) NOT NULL,
     role VARCHAR(30) NOT NULL,
     gender VARCHAR(20) DEFAULT 'OTHER',
+    age INT,
+    sex VARCHAR(20),
+    service_area TEXT DEFAULT 'Bangalore',
     avatar_url TEXT,
     email_verified BOOLEAN DEFAULT FALSE,
     phone_verified BOOLEAN DEFAULT FALSE,
@@ -67,6 +70,7 @@ CREATE TABLE IF NOT EXISTS professional_profiles (
     face_verified BOOLEAN DEFAULT FALSE,
     coverage_radius_km NUMERIC(5,2) DEFAULT 50.00,
     assigned_region VARCHAR(100) DEFAULT 'Bangalore',
+    service_area TEXT DEFAULT 'Bangalore',
     is_online BOOLEAN DEFAULT FALSE,
     is_busy BOOLEAN DEFAULT FALSE,
     current_location JSONB,
@@ -89,6 +93,20 @@ CREATE TABLE IF NOT EXISTS pro_offered_services (
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (pro_id, service_id)
+);
+
+-- 6b. Pending Custom Service Requests from Professionals
+CREATE TABLE IF NOT EXISTS pending_service_requests (
+    id VARCHAR(50) PRIMARY KEY,
+    pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    service_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    suggested_price NUMERIC(10,2),
+    category_id VARCHAR(50),
+    status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
+    admin_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 7. Training Modules Table
@@ -135,13 +153,12 @@ CREATE TABLE IF NOT EXISTS service_categories (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Seed Initial Categories
 INSERT INTO service_categories (id, name, description) VALUES
 ('cat-clean', 'Cleaning Services', 'Home deep cleaning, kitchen & bathroom sanitization'),
 ('cat-elec', 'Electrical Repair', 'Wiring, switchboard, fan & appliance repairs'),
 ('cat-plumb', 'Plumbing Care', 'Tap leak fix, pipe repair & unblocking'),
 ('cat-salon', 'Salon & Spa', 'Home haircut, facial & grooming'),
-('cat-safety', 'Safety Escort', 'Verified women safety escort & night security')
+('cat-safe', 'Safety Services', 'Verified safety escort & security')
 ON CONFLICT (id) DO NOTHING;
 
 -- 11. Services Catalog Table
@@ -164,7 +181,7 @@ INSERT INTO services (id, category_id, name, description, base_price, duration_m
 ('srv-plumb-01', 'cat-plumb', 'Tap Leak Fix', 'Repair leaking taps, replace washers & valves', 249.00, 30),
 ('srv-plumb-02', 'cat-plumb', 'Pipe Leak Repair', 'Fix PVC/metal pipe joints & drainage leaks', 349.00, 60),
 ('srv-salon-01', 'cat-salon', 'Home Haircut (Female)', 'Professional hair trimming & styling at home', 499.00, 60),
-('srv-safe-01', 'cat-safety', 'Women Safety Escort', 'Verified female safety escort for night travel', 999.00, 120)
+('srv-safe-01', 'cat-safe', 'Women Safety Escort', 'Verified female safety escort for night travel', 999.00, 120)
 ON CONFLICT (id) DO NOTHING;
 
 -- 12. Bookings Table

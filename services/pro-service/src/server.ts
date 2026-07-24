@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
 import { pool } from '@lumo/database';
 import { authenticateToken, AuthenticatedRequest, AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
@@ -10,8 +12,15 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5003;
 
+// Ensure backend/proff_cert folder exists
+const proffCertDir = path.join(process.cwd(), 'proff_cert');
+if (!fs.existsSync(proffCertDir)) {
+  fs.mkdirSync(proffCertDir, { recursive: true });
+}
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use('/proff_cert', express.static(proffCertDir));
 
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Pro Service' }));
 
@@ -117,8 +126,33 @@ app.post('/api/v1/pro/documents', authenticateToken, async (req: AuthenticatedRe
 
     res.json({
       success: true,
-      message: 'Verification documents submitted. Profile set to PENDING admin review.',
+      message: 'Verification documents submitted for review',
       data: pro,
+    });
+  } catch (err) { next(err); }
+});
+
+// 3b. Upload File to Backend proff_cert Folder
+app.post('/api/v1/pro/upload-doc', async (req, res, next) => {
+  try {
+    const { fileName, fileData, docType } = req.body;
+    if (!fileData) throw new AppError('File content required', 400);
+
+    const cleanName = (fileName || 'document.pdf').replaceAll(/[^a-zA-Z0-9_.-]/g, '_');
+    const savedFileName = `${Date.now()}_${cleanName}`;
+    const savePath = path.join(proffCertDir, savedFileName);
+
+    const buffer = Buffer.from(fileData.replace(/^data:.*?;base64,/, ''), 'base64');
+    fs.writeFileSync(savePath, buffer);
+
+    console.log(`📄 [DOCUMENT-SAVED] Stored ${docType || 'doc'} in proff_cert folder: ${savedFileName}`);
+
+    res.json({
+      success: true,
+      message: 'Document stored successfully in proff_cert folder',
+      fileUrl: `/proff_cert/${savedFileName}`,
+      savedFileName,
+      localPath: savePath,
     });
   } catch (err) { next(err); }
 });
@@ -177,6 +211,89 @@ app.post('/api/v1/pro/status', authenticateToken, async (req: AuthenticatedReque
   } catch (err) { next(err); }
 });
 
+// 6. Get Job Invites (pending bookings within pro's coverage area)
+app.get('/api/v1/pro/job-invites', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [req.user!.userId]);
+    const pro = proRes.rows[0];
+    if (!pro) throw new AppError('Professional profile not found', 404);
+
+    // Fetch REQUESTED bookings where pro hasn't been assigned yet
+    const bookingsRes = await pool.query(
+      `SELECT b.*, s.name as service_name, s.base_price,
+              u.full_name as customer_name, u.phone_number as customer_phone
+       FROM bookings b
+       JOIN services s ON b.service_id = s.id
+       JOIN users u ON b.customer_id = u.id
+       WHERE b.status = 'REQUESTED'
+         AND b.pro_id IS NULL
+       ORDER BY b.created_at DESC
+       LIMIT 20`,
+      []
+    );
+
+    res.json({ success: true, data: bookingsRes.rows });
+  } catch (err) { next(err); }
+});
+
+// 7. Request a Custom Service (pending admin approval)
+app.post('/api/v1/pro/service-request', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { serviceName, description, suggestedPrice, categoryId } = req.body;
+    if (!serviceName) throw new AppError('Service name is required', 400);
+
+    const id = `svc-req-${randomUUID().slice(0, 8)}`;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pending_service_requests (
+          id VARCHAR(50) PRIMARY KEY,
+          pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          service_name VARCHAR(100) NOT NULL,
+          description TEXT,
+          suggested_price NUMERIC(10,2),
+          category_id VARCHAR(50),
+          status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
+          admin_notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `).catch(() => {});
+
+    const result = await pool.query(
+      `INSERT INTO pending_service_requests (id, pro_id, service_name, description, suggested_price, category_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id, req.user!.userId, serviceName, description || '', suggestedPrice || null, categoryId || null]
+    );
+
+    res.status(201).json({ success: true, data: result.rows[0], message: 'Service request submitted for admin review.' });
+  } catch (err) { next(err); }
+});
+
+// 8. Get Pro's custom service requests
+app.get('/api/v1/pro/service-requests', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pending_service_requests (
+          id VARCHAR(50) PRIMARY KEY,
+          pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          service_name VARCHAR(100) NOT NULL,
+          description TEXT,
+          suggested_price NUMERIC(10,2),
+          category_id VARCHAR(50),
+          status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
+          admin_notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `).catch(() => {});
+
+    const result = await pool.query(
+      `SELECT * FROM pending_service_requests WHERE pro_id = $1 ORDER BY created_at DESC`,
+      [req.user!.userId]
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) { next(err); }
+});
+
 app.use(errorHandler);
 
-app.listen(PORT, () => console.log(`👷 Pro Service running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`👷 Pro Service running on port ${PORT}`));

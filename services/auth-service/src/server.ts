@@ -23,6 +23,68 @@ function hashPassword(password: string): string {
   return createHash('sha256').update(password).digest('hex');
 }
 
+async function ensureSchema() {
+  try {
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(20) DEFAULT 'OTHER';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS age INT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS sex VARCHAR(20);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+
+      CREATE TABLE IF NOT EXISTS professional_profiles (
+          id VARCHAR(50) PRIMARY KEY,
+          user_id VARCHAR(50) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          verification_status VARCHAR(30) DEFAULT 'PENDING',
+          verification_notes TEXT,
+          documents JSONB DEFAULT '{}'::jsonb,
+          face_verification_url TEXT,
+          face_verified BOOLEAN DEFAULT FALSE,
+          is_online BOOLEAN DEFAULT FALSE,
+          is_busy BOOLEAN DEFAULT FALSE,
+          current_location JSONB,
+          service_area TEXT DEFAULT 'Bangalore',
+          assigned_region TEXT DEFAULT 'Bangalore',
+          coverage_radius_km NUMERIC(6,2) DEFAULT 50.00,
+          rating_avg NUMERIC(3,2) DEFAULT 5.0,
+          total_jobs_completed INT DEFAULT 0,
+          acceptance_rate NUMERIC(5,2) DEFAULT 100.0,
+          cancellation_rate NUMERIC(5,2) DEFAULT 0.0,
+          account_health_score NUMERIC(5,2) DEFAULT 100.0,
+          is_blacklisted BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_status VARCHAR(30) DEFAULT 'PENDING';
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS documents JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS face_verification_url TEXT;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS face_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT FALSE;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS is_busy BOOLEAN DEFAULT FALSE;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS current_location JSONB;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT 'Bangalore';
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region TEXT DEFAULT 'Bangalore';
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS coverage_radius_km NUMERIC(6,2) DEFAULT 50.00;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS rating_avg NUMERIC(3,2) DEFAULT 5.0;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS total_jobs_completed INT DEFAULT 0;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS acceptance_rate NUMERIC(5,2) DEFAULT 100.0;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS cancellation_rate NUMERIC(5,2) DEFAULT 0.0;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS account_health_score NUMERIC(5,2) DEFAULT 100.0;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN DEFAULT FALSE;
+    `);
+  } catch (err: any) {
+    console.warn('⚠️ Schema migration warning:', err.message);
+  }
+}
+
+// Run schema migration on startup
+ensureSchema();
+
 // Firebase Admin Initialization
 if (!process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
   try {
@@ -64,12 +126,12 @@ app.post('/api/v1/auth/otp/send', async (req, res, next) => {
 // 2. Verify OTP Request
 app.post('/api/v1/auth/otp/verify', async (req, res, next) => {
   try {
+    await ensureSchema();
     const { phoneNumber, otp, role = 'CUSTOMER', fullName, gender = 'OTHER' } = req.body;
     const otpRes = await pool.query('SELECT * FROM otps WHERE phone_number = $1', [phoneNumber]);
     const record = otpRes.rows[0];
 
     if (!record || record.otp !== otp) throw new AppError('Invalid OTP code', 400);
-    await pool.query('DELETE FROM otps WHERE phone_number = $1', [phoneNumber]);
 
     let userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
     let user = userRes.rows[0];
@@ -94,6 +156,9 @@ app.post('/api/v1/auth/otp/verify', async (req, res, next) => {
       await pool.query('UPDATE users SET phone_verified = true WHERE id = $1', [user.id]);
     }
 
+    // Clear OTP after user creation/verification succeeds
+    await pool.query('DELETE FROM otps WHERE phone_number = $1', [phoneNumber]);
+
     const payload = { userId: user.id, role: user.role, phoneNumber: user.phone_number };
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
@@ -108,11 +173,37 @@ app.post('/api/v1/auth/pro/register', async (req, res, next) => {
     const { email, password, phoneNumber, fullName, gender = 'OTHER' } = req.body;
     if (!email || !password || !fullName) throw new AppError('Email, password and name are required', 400);
 
+    // Auto-migrate column if missing
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)').catch(() => {});
+
+    const passHash = hashPassword(password);
     const existing = await pool.query('SELECT * FROM users WHERE email = $1 OR (phone_number IS NOT NULL AND phone_number = $2)', [email, phoneNumber || '']);
-    if (existing.rows.length > 0) throw new AppError('An account with this email or phone number already exists', 400);
+    
+    if (existing.rows.length > 0) {
+      const existingUser = existing.rows[0];
+      // If password matches existing account, seamlessly log in
+      if (existingUser.password_hash === passHash) {
+        const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [existingUser.id]);
+        const pro = proRes.rows[0];
+
+        const payload = { userId: existingUser.id, role: existingUser.role, email: existingUser.email };
+        const accessToken = generateAccessToken(payload);
+        const refreshToken = generateRefreshToken(payload);
+
+        return res.status(200).json({
+          success: true,
+          message: 'Account already exists. Seamlessly logged in.',
+          data: {
+            user: existingUser,
+            verificationStatus: pro ? pro.verification_status : 'PENDING',
+            tokens: { accessToken, refreshToken }
+          }
+        });
+      }
+      throw new AppError('An account with this email address already exists. Please tap Sign In.', 400);
+    }
 
     const userId = `usr-${randomUUID().slice(0, 8)}`;
-    const passHash = hashPassword(password);
 
     const insertRes = await pool.query(
       `INSERT INTO users (id, email, password_hash, phone_number, full_name, role, gender, is_active)
@@ -239,8 +330,80 @@ app.post('/api/v1/auth/firebase-login', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// 8. Pro Register Phone (Step 2 Onboarding Update)
+app.post('/api/v1/auth/pro/register-phone', async (req, res, next) => {
+  try {
+    await ensureSchema();
+    const { phoneNumber, fullName, age, email, gender, serviceArea } = req.body;
+    if (!phoneNumber || !fullName) throw new AppError('Phone number and full name required', 400);
+
+    let userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    let user = userRes.rows[0];
+
+    if (user) {
+      const updateRes = await pool.query(
+        `UPDATE users 
+         SET full_name = $1, age = $2, email = COALESCE($3, email), gender = $4, service_area = $5, updated_at = NOW() 
+         WHERE id = $6 RETURNING *`,
+        [fullName, age || null, email || null, gender || 'MALE', serviceArea || 'Bangalore', user.id]
+      );
+      user = updateRes.rows[0];
+    } else {
+      const userId = `usr-${randomUUID().slice(0, 8)}`;
+      const insertRes = await pool.query(
+        `INSERT INTO users (id, phone_number, full_name, age, email, role, gender, service_area, phone_verified, is_active)
+         VALUES ($1, $2, $3, $4, $5, 'PROFESSIONAL', $6, $7, true, true) RETURNING *`,
+        [userId, phoneNumber, fullName, age || null, email || null, gender || 'MALE', serviceArea || 'Bangalore']
+      );
+      user = insertRes.rows[0];
+    }
+
+    await pool.query(
+      `INSERT INTO professional_profiles (id, user_id, verification_status, service_area, coverage_radius_km)
+       VALUES ($1, $2, 'PENDING', $3, 50.00)
+       ON CONFLICT (user_id) DO UPDATE SET service_area = $3`,
+      [`pro-${randomUUID().slice(0, 8)}`, user.id, serviceArea || 'Bangalore']
+    );
+
+    const payload = { userId: user.id, role: user.role, phoneNumber: user.phone_number };
+    const accessToken = generateAccessToken(payload);
+    const refreshToken = generateRefreshToken(payload);
+
+    res.json({
+      success: true,
+      data: {
+        user,
+        verificationStatus: 'PENDING',
+        tokens: { accessToken, refreshToken }
+      }
+    });
+  } catch (err) { next(err); }
+});
+
+// 9. Customer Complete Profile
+app.post('/api/v1/auth/customer/complete-profile', async (req, res, next) => {
+  try {
+    await ensureSchema();
+    const { fullName, age, sex, email } = req.body;
+    const userId = (req as any).user?.userId;
+
+    if (!userId) {
+      return res.json({ success: true, message: 'Profile updated locally' });
+    }
+
+    const updateRes = await pool.query(
+      `UPDATE users 
+       SET full_name = COALESCE($1, full_name), age = COALESCE($2, age), sex = COALESCE($3, sex), email = COALESCE($4, email), updated_at = NOW() 
+       WHERE id = $5 RETURNING *`,
+      [fullName, age, sex, email, userId]
+    );
+
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) { next(err); }
+});
+
 app.use(errorHandler);
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🛡️ Auth Service running on port ${PORT}`);
 });

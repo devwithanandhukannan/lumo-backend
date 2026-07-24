@@ -72,6 +72,31 @@ export class AuthController {
       next(err);
     }
   }
+
+  // NEW: Complete customer profile after OTP
+  async completeCustomerProfile(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { fullName, age, sex, email } = req.body;
+      const userId = req.user!.userId;
+      const result = await authService.completeCustomerProfile(userId, fullName, parseInt(age), sex, email);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // NEW: Register professional with phone OTP
+  async registerProWithPhone(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { phoneNumber, fullName, age, email, gender, serviceArea } = req.body;
+      const result = await authService.registerProWithPhone(
+        phoneNumber, fullName, parseInt(age), email, gender, serviceArea
+      );
+      res.status(201).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 
 export const authController = new AuthController();

@@ -314,7 +314,113 @@ export class AuthService {
     };
   }
 
-  // 6. Logout
+  // 6. Complete Customer Profile (post-OTP first-time registration)
+  async completeCustomerProfile(
+    userId: string,
+    fullName: string,
+    age: number,
+    sex: string,
+    email?: string
+  ) {
+    const updateRes = await pool.query(
+      `UPDATE users
+       SET full_name = $1, age = $2, sex = $3, email = COALESCE($4, email), updated_at = NOW()
+       WHERE id = $5
+       RETURNING *`,
+      [fullName, age, sex, email || null, userId]
+    );
+    const user = updateRes.rows[0];
+    if (!user) throw new AppError('User not found', 404);
+    return {
+      id: user.id,
+      phoneNumber: user.phone_number,
+      fullName: user.full_name,
+      age: user.age,
+      sex: user.sex,
+      email: user.email,
+      role: user.role,
+      gender: user.gender,
+    };
+  }
+
+  // 7. Register Professional with Phone OTP (full registration with extra fields)
+  async registerProWithPhone(
+    phoneNumber: string,
+    fullName: string,
+    age: number,
+    email: string,
+    gender: string,
+    serviceArea: string
+  ) {
+    // Upsert user with PROFESSIONAL role
+    const userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    let user = userRes.rows[0];
+
+    if (!user) {
+      const userId = `usr-${randomUUID().slice(0, 8)}`;
+      const insertRes = await pool.query(
+        `INSERT INTO users (id, phone_number, full_name, role, gender, age, email, is_active)
+         VALUES ($1, $2, $3, 'PROFESSIONAL', $4, $5, $6, true)
+         RETURNING *`,
+        [userId, phoneNumber, fullName, gender, age, email || null]
+      );
+      user = insertRes.rows[0];
+    } else {
+      const updateRes = await pool.query(
+        `UPDATE users SET full_name = $1, age = $2, gender = $3, email = COALESCE($4, email),
+         role = 'PROFESSIONAL', updated_at = NOW()
+         WHERE id = $5 RETURNING *`,
+        [fullName, age, gender, email || null, user.id]
+      );
+      user = updateRes.rows[0];
+    }
+
+    // Create or update professional profile
+    const proRes = await pool.query('SELECT id FROM professional_profiles WHERE user_id = $1', [user.id]);
+    if (!proRes.rows[0]) {
+      const proProfId = `pro-prof-${randomUUID().slice(0, 8)}`;
+      await pool.query(
+        `INSERT INTO professional_profiles
+         (id, user_id, verification_status, documents, face_verified, is_online, is_busy,
+          rating_avg, total_jobs_completed, acceptance_rate, cancellation_rate, account_health_score,
+          is_blacklisted, service_area, coverage_radius_km)
+         VALUES ($1, $2, 'PENDING', '{}'::jsonb, false, false, false, 5.0, 0, 100.0, 0.0, 100.0, false, $3, 50.0)`,
+        [proProfId, user.id, serviceArea || 'Bangalore']
+      );
+    } else {
+      await pool.query(
+        `UPDATE professional_profiles SET service_area = $1, updated_at = NOW() WHERE user_id = $2`,
+        [serviceArea || 'Bangalore', user.id]
+      );
+    }
+
+    const tokenPayload = { userId: user.id, role: 'PROFESSIONAL' as any, phoneNumber: user.phone_number };
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    await pool.query(
+      `INSERT INTO refresh_tokens (token, user_id, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (token) DO UPDATE SET expires_at = $3`,
+      [refreshToken, user.id, Date.now() + 7 * 24 * 60 * 60 * 1000]
+    );
+
+    return {
+      user: {
+        id: user.id,
+        phoneNumber: user.phone_number,
+        fullName: user.full_name,
+        age: user.age,
+        email: user.email,
+        role: user.role,
+        gender: user.gender,
+      },
+      tokens: { accessToken, refreshToken, expiresIn: config.jwtExpiresIn },
+      verificationStatus: 'PENDING',
+    };
+  }
+
+  // 8. Logout
   async logout(refreshToken?: string) {
     if (refreshToken) {
       await pool.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);

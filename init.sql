@@ -9,7 +9,12 @@ CREATE TABLE IF NOT EXISTS users (
     full_name VARCHAR(100) NOT NULL,
     role VARCHAR(30) NOT NULL,
     gender VARCHAR(20),
+    age INT,
+    sex VARCHAR(20),
     avatar_url TEXT,
+    email_verified BOOLEAN DEFAULT FALSE,
+    phone_verified BOOLEAN DEFAULT FALSE,
+    password_hash TEXT,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -58,12 +63,32 @@ CREATE TABLE IF NOT EXISTS professional_profiles (
     is_online BOOLEAN DEFAULT FALSE,
     is_busy BOOLEAN DEFAULT FALSE,
     current_location JSONB,
+    service_area TEXT DEFAULT 'Bangalore',
+    assigned_region TEXT DEFAULT 'Bangalore',
+    coverage_radius_km NUMERIC(6,2) DEFAULT 50.00,
     rating_avg NUMERIC(3,2) DEFAULT 5.0,
     total_jobs_completed INT DEFAULT 0,
     acceptance_rate NUMERIC(5,2) DEFAULT 100.0,
     cancellation_rate NUMERIC(5,2) DEFAULT 0.0,
     account_health_score NUMERIC(5,2) DEFAULT 100.0,
     is_blacklisted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5b. Pro Offered Services (with commission hidden from pros)
+ALTER TABLE IF EXISTS services ADD COLUMN IF NOT EXISTS commission_pct NUMERIC(5,2) DEFAULT 15.00;
+
+-- 5c. Pending Custom Service Requests from Professionals
+CREATE TABLE IF NOT EXISTS pending_service_requests (
+    id VARCHAR(50) PRIMARY KEY,
+    pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    service_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    suggested_price NUMERIC(10,2),
+    category_id VARCHAR(50) REFERENCES service_categories(id),
+    status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
+    admin_notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

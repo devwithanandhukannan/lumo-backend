@@ -44,6 +44,15 @@ export const initDatabaseTables = async () => {
           updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(20) DEFAULT 'OTHER';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS age INT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS sex VARCHAR(20);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+
       CREATE TABLE IF NOT EXISTS otps (
           phone_number VARCHAR(20) PRIMARY KEY,
           otp VARCHAR(10) NOT NULL,

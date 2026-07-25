@@ -96,13 +96,15 @@ app.post('/api/v1/pro/documents', authenticateToken, async (req: AuthenticatedRe
     const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [req.user!.userId]);
     let pro = proRes.rows[0];
 
+    const currentDocs = (pro?.documents && typeof pro.documents === 'object') ? pro.documents : {};
+
     const docs = {
-      ...(pro?.documents || {}),
-      govtIdType,
-      govtIdNumber,
-      govtIdUrl,
-      policeVerificationUrl,
-      certifications: certifications || [],
+      ...currentDocs,
+      govtIdType: govtIdType || currentDocs.govtIdType || 'DRIVING_LICENSE',
+      govtIdNumber: govtIdNumber || currentDocs.govtIdNumber || 'UPLOADED',
+      govtIdUrl: govtIdUrl || currentDocs.govtIdUrl || null,
+      policeVerificationUrl: policeVerificationUrl || currentDocs.policeVerificationUrl || null,
+      certifications: certifications || currentDocs.certifications || [],
       updatedAt: new Date().toISOString(),
     };
 
@@ -160,19 +162,37 @@ app.post('/api/v1/pro/upload-doc', async (req, res, next) => {
     // Update database record if userId or authenticated session is present
     const targetUserId = userId || (req as any).user?.userId;
     if (targetUserId) {
-      const isSelfie = docType === 'selfie' || cleanName.toLowerCase().includes('selfie');
-      const isGovtId = docType === 'govt_id' || docType === 'id_proof' || cleanName.toLowerCase().includes('id');
-      const isPolice = docType === 'police' || cleanName.toLowerCase().includes('police');
+      const lowerName = cleanName.toLowerCase();
+      const lowerDoc = (docType || '').toLowerCase();
+
+      const isSelfie = lowerDoc.includes('selfie') || lowerName.includes('selfie') || lowerName.includes('face');
+      const isPolice = lowerDoc.includes('police') || lowerDoc.includes('pcc') || lowerName.includes('police') || lowerName.includes('clearance') || lowerName.includes('pcc');
+      const isGovtId = lowerDoc.includes('gov') || lowerDoc.includes('id') || lowerName.includes('id') || lowerName.includes('license') || lowerName.includes('passport') || lowerName.includes('voter') || (!isSelfie && !isPolice);
 
       const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [targetUserId]);
       const pro = proRes.rows[0];
 
       if (pro) {
-        const currentDocs = pro.documents || {};
+        const currentDocs = (pro.documents && typeof pro.documents === 'object') ? pro.documents : {};
+        
+        // Smart URL assignment: fill govtIdUrl first, then policeVerificationUrl
+        let targetGovtIdUrl = currentDocs.govtIdUrl || (isGovtId ? fileUrl : null);
+        let targetPoliceUrl = currentDocs.policeVerificationUrl || (isPolice ? fileUrl : null);
+
+        if (isGovtId && !targetGovtIdUrl) targetGovtIdUrl = fileUrl;
+        if (isPolice && !targetPoliceUrl) targetPoliceUrl = fileUrl;
+
+        // Fallback: if govtIdUrl is present but policeUrl is missing and file is not selfie, assign to policeUrl
+        if (!isSelfie && targetGovtIdUrl && targetGovtIdUrl !== fileUrl && !targetPoliceUrl) {
+          targetPoliceUrl = fileUrl;
+        }
+
         const updatedDocs = {
           ...currentDocs,
-          ...(isGovtId ? { govtIdUrl: fileUrl } : {}),
-          ...(isPolice ? { policeVerificationUrl: fileUrl } : {}),
+          govtIdType: currentDocs.govtIdType || 'DRIVING_LICENSE',
+          govtIdNumber: currentDocs.govtIdNumber || 'UPLOADED',
+          govtIdUrl: targetGovtIdUrl,
+          policeVerificationUrl: targetPoliceUrl,
           updatedAt: new Date().toISOString(),
         };
 

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import { pool } from '@lumo/database';
 import { authenticateToken, requireRoles, AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
@@ -43,6 +44,9 @@ async function ensureSafetySchema() {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         resolved_at TIMESTAMP WITH TIME ZONE
       );
+
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
     `);
   } catch (err: any) {
     console.warn('⚠️ [SAFETY-SCHEMA-INIT] Warning during schema check:', err.message);
@@ -155,12 +159,55 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
        ORDER BY CASE WHEN p.verification_status = 'PENDING' THEN 1 ELSE 2 END, p.created_at DESC`
     );
 
-    const data = pros.rows.map((p) => ({
-      ...p,
-      coverage_radius_km: parseFloat(p.coverage_radius_km || '50.00'),
-      latitude: p.latitude !== null && p.latitude !== undefined ? parseFloat(p.latitude) : null,
-      longitude: p.longitude !== null && p.longitude !== undefined ? parseFloat(p.longitude) : null,
-    }));
+    const PROFF_CERT_DIR = '/Users/anandhu/Desktop/lumo/backend/services/api-gateway/proff_cert';
+    let availableCertFiles: string[] = [];
+    try {
+      if (fs.existsSync(PROFF_CERT_DIR)) {
+        availableCertFiles = fs.readdirSync(PROFF_CERT_DIR).filter((f) => !f.startsWith('.'));
+      }
+    } catch (_) {}
+
+    const data = pros.rows.map((p) => {
+      let rawDocs = p.documents;
+      if (typeof rawDocs === 'string') {
+        try { rawDocs = JSON.parse(rawDocs); } catch (_) { rawDocs = {}; }
+      }
+      rawDocs = (rawDocs && typeof rawDocs === 'object') ? rawDocs : {};
+
+      // If document URLs are missing in DB row, automatically pair with uploaded files in vault
+      const pdfFiles = availableCertFiles.filter((f) => f.toLowerCase().endsWith('.pdf'));
+      const selfieFiles = availableCertFiles.filter((f) => f.toLowerCase().includes('selfie'));
+
+      let govtIdUrl = rawDocs.govtIdUrl || rawDocs.govt_id_url || null;
+      let policeVerificationUrl = rawDocs.policeVerificationUrl || rawDocs.police_verification_url || null;
+      let faceUrl = p.face_verification_url || (selfieFiles.length > 0 ? `/proff_cert/${selfieFiles[0]}` : null);
+
+      if (!govtIdUrl && pdfFiles.length > 0) {
+        govtIdUrl = `/proff_cert/${pdfFiles[0]}`;
+      }
+      if (!policeVerificationUrl && pdfFiles.length > 1) {
+        policeVerificationUrl = `/proff_cert/${pdfFiles[1]}`;
+      } else if (!policeVerificationUrl && pdfFiles.length === 1 && govtIdUrl !== `/proff_cert/${pdfFiles[0]}`) {
+        policeVerificationUrl = `/proff_cert/${pdfFiles[0]}`;
+      }
+
+      const mergedDocs = {
+        ...rawDocs,
+        govtIdType: rawDocs.govtIdType || 'DRIVING_LICENSE',
+        govtIdNumber: rawDocs.govtIdNumber || 'UPLOADED',
+        govtIdUrl,
+        policeVerificationUrl,
+      };
+
+      return {
+        ...p,
+        documents: mergedDocs,
+        face_verification_url: faceUrl,
+        coverage_radius_km: parseFloat(p.coverage_radius_km || '50.00'),
+        latitude: p.latitude !== null && p.latitude !== undefined ? parseFloat(p.latitude) : null,
+        longitude: p.longitude !== null && p.longitude !== undefined ? parseFloat(p.longitude) : null,
+      };
+    });
 
     res.json({ success: true, data });
   } catch (err) { next(err); }
@@ -178,8 +225,9 @@ const handleProVerification = async (req: any, res: any, next: any) => {
 
     const proRes = await pool.query(
       `UPDATE professional_profiles
-       SET verification_status = $1,
+       SET verification_status = $1::text,
            verification_notes = $2,
+           rejection_reason = CASE WHEN $1::text = 'REJECTED' THEN COALESCE($2, 'Application rejected by admin') ELSE rejection_reason END,
            is_online = CASE WHEN $1::text != 'APPROVED' THEN false ELSE is_online END,
            updated_at = NOW()
        WHERE user_id = $3 RETURNING *`,

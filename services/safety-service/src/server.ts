@@ -61,30 +61,8 @@ const handleSosTrigger = async (req: any, res: any, next: any) => {
     }
 
     const sosId = `sos-${randomUUID().slice(0, 8)}`;
-    let userId = req.user?.userId;
-    let userRole = req.user?.role || 'PROFESSIONAL';
-
-    // Verify if userId exists in database users table to prevent Foreign Key Violation (sos_alerts_triggered_by_user_id_fkey)
-    let validUserRes = userId ? await pool.query('SELECT id, full_name, email, phone_number, role FROM users WHERE id = $1', [userId]) : { rows: [] };
-    
-    if (validUserRes.rows.length === 0) {
-      // Fallback to active professional user in database
-      const fallbackUserRes = await pool.query("SELECT id, full_name, email, phone_number, role FROM users WHERE role = 'PROFESSIONAL' ORDER BY created_at ASC LIMIT 1");
-      if (fallbackUserRes.rows.length > 0) {
-        validUserRes = fallbackUserRes;
-        userId = fallbackUserRes.rows[0].id;
-        userRole = fallbackUserRes.rows[0].role;
-      } else {
-        const anyUserRes = await pool.query("SELECT id, full_name, email, phone_number, role FROM users ORDER BY created_at ASC LIMIT 1");
-        if (anyUserRes.rows.length > 0) {
-          validUserRes = anyUserRes;
-          userId = anyUserRes.rows[0].id;
-          userRole = anyUserRes.rows[0].role;
-        }
-      }
-    }
-
-    const userInfo = validUserRes.rows[0] || {};
+    const userId = req.user?.userId || 'usr-009088e1';
+    const userRole = req.user?.role || 'PROFESSIONAL';
 
     const result = await pool.query(
       `INSERT INTO sos_alerts (id, booking_id, triggered_by_user_id, trigger_latitude, trigger_longitude, status, notes)
@@ -93,6 +71,10 @@ const handleSosTrigger = async (req: any, res: any, next: any) => {
     );
 
     const sosAlert = result.rows[0];
+
+    // Fetch details of user triggering SOS
+    const userRes = await pool.query('SELECT full_name, email, phone_number, role FROM users WHERE id = $1', [userId]);
+    const userInfo = userRes.rows[0] || {};
 
     const enrichedSosData = {
       id: sosAlert.id,
@@ -108,7 +90,7 @@ const handleSosTrigger = async (req: any, res: any, next: any) => {
       phone_number: userInfo.phone_number || '',
     };
 
-    console.log(`🚨 [EMERGENCY-SOS] ALERT TRIGGERED by ${userRole} ${userId} (${userInfo.full_name}) at (${latitude}, ${longitude})`);
+    console.log(`🚨 [EMERGENCY-SOS] ALERT TRIGGERED by ${userRole} ${userId} at (${latitude}, ${longitude})`);
 
     // Broadcast to Notification Service (Fire and Forget)
     fetch(`${NOTIFICATION_SERVICE_URL}/api/v1/notifications/broadcast-sos`, {
@@ -126,28 +108,8 @@ const handleSosTrigger = async (req: any, res: any, next: any) => {
   } catch (err) { next(err); }
 };
 
-// Soft/Fallback Authentication Middleware for Emergency SOS
-// Ensures life-safety emergency SOS triggers succeed even if JWT token is expired or missing
-const softAuthenticateToken = (req: any, res: any, next: any) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-        req.user = {
-          userId: payload.userId || payload.id,
-          role: payload.role || 'PROFESSIONAL',
-        };
-      }
-    }
-  } catch (_) {}
-  next();
-};
-
-app.post('/api/v1/safety/sos', softAuthenticateToken, handleSosTrigger);
-app.post('/api/v1/safety/sos/trigger', softAuthenticateToken, handleSosTrigger);
+app.post('/api/v1/safety/sos', authenticateToken, handleSosTrigger);
+app.post('/api/v1/safety/sos/trigger', authenticateToken, handleSosTrigger);
 
 // 2. Fetch Active SOS Alerts (Admin Safety Dashboard)
 app.get('/api/v1/admin/safety/sos', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
@@ -156,12 +118,9 @@ app.get('/api/v1/admin/safety/sos', authenticateToken, requireRoles(['ADMIN', 'S
       `SELECT s.id, s.booking_id, s.triggered_by_user_id as user_id,
               s.trigger_latitude as latitude, s.trigger_longitude as longitude,
               s.status, s.notes, s.created_at,
-              COALESCE(u.full_name, 'Emergency Reporter') as full_name,
-              COALESCE(u.phone_number, 'N/A') as phone_number,
-              COALESCE(u.email, '') as email,
-              COALESCE(u.role, 'PROFESSIONAL') as user_role
+              u.full_name, u.phone_number, u.email, u.role as user_role
        FROM sos_alerts s
-       LEFT JOIN users u ON s.triggered_by_user_id = u.id
+       JOIN users u ON s.triggered_by_user_id = u.id
        ORDER BY s.created_at DESC`
     );
 
@@ -187,14 +146,23 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
     const pros = await pool.query(
       `SELECT u.id as user_id, u.full_name, u.email, u.phone_number, u.gender, u.email_verified, u.phone_verified,
               p.id as profile_id, p.verification_status, p.documents, p.face_verification_url, p.face_verified,
-              p.coverage_radius_km, p.assigned_region, p.service_area, p.is_online, p.rating_avg, p.created_at
+              p.coverage_radius_km, p.assigned_region, p.service_area, p.is_online, p.rating_avg, p.created_at,
+              COALESCE(p.latitude, u.latitude) as latitude,
+              COALESCE(p.longitude, u.longitude) as longitude
        FROM users u
        JOIN professional_profiles p ON u.id = p.user_id
        WHERE u.role = 'PROFESSIONAL'
        ORDER BY CASE WHEN p.verification_status = 'PENDING' THEN 1 ELSE 2 END, p.created_at DESC`
     );
 
-    res.json({ success: true, data: pros.rows });
+    const data = pros.rows.map((p) => ({
+      ...p,
+      coverage_radius_km: parseFloat(p.coverage_radius_km || '50.00'),
+      latitude: p.latitude !== null && p.latitude !== undefined ? parseFloat(p.latitude) : null,
+      longitude: p.longitude !== null && p.longitude !== undefined ? parseFloat(p.longitude) : null,
+    }));
+
+    res.json({ success: true, data });
   } catch (err) { next(err); }
 });
 
@@ -212,7 +180,7 @@ const handleProVerification = async (req: any, res: any, next: any) => {
       `UPDATE professional_profiles
        SET verification_status = $1,
            verification_notes = $2,
-           is_online = CASE WHEN $1 != 'APPROVED' THEN false ELSE is_online END,
+           is_online = CASE WHEN $1::text != 'APPROVED' THEN false ELSE is_online END,
            updated_at = NOW()
        WHERE user_id = $3 RETURNING *`,
       [status, notes || null, userId]

@@ -26,25 +26,15 @@ const CATALOG_SERVICE_URL = process.env.CATALOG_SERVICE_URL || 'http://localhost
 const BOOKING_SERVICE_URL = process.env.BOOKING_SERVICE_URL || 'http://localhost:5005';
 const GEO_SERVICE_URL = process.env.GEO_SERVICE_URL || 'http://localhost:5006';
 const SAFETY_SERVICE_URL = process.env.SAFETY_SERVICE_URL || 'http://localhost:5007';
-const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:5008';
 const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:5009';
-const MEDIA_SERVICE_URL = process.env.MEDIA_SERVICE_URL || 'http://localhost:5010';
 
-// Candidate static folders for /proff_cert document vault
-const candidateCertDirs = [
-  path.resolve(__dirname, '../../../proff_cert'),
-  path.resolve(__dirname, '../../proff_cert'),
-  path.resolve(process.cwd(), '../../proff_cert'),
-  path.resolve(process.cwd(), '../pro-service/proff_cert'),
-  path.resolve(process.cwd(), 'proff_cert'),
-];
-
-for (const dir of candidateCertDirs) {
-  if (fs.existsSync(dir)) {
-    console.log(`📂 [API-GATEWAY] Mounted static vault: ${dir}`);
-    app.use('/proff_cert', express.static(dir));
-  }
+// Single unified static folder for /proff_cert document vault
+const PROFF_CERT_DIR = path.resolve('/Users/anandhu/Desktop/lumo/backend/services/api-gateway/proff_cert');
+if (!fs.existsSync(PROFF_CERT_DIR)) {
+  try { fs.mkdirSync(PROFF_CERT_DIR, { recursive: true }); } catch (_) { }
 }
+console.log(`📂 [API-GATEWAY] Mounted static vault: ${PROFF_CERT_DIR}`);
+app.use('/proff_cert', express.static(PROFF_CERT_DIR));
 
 // Fallback proxy /proff_cert requests to pro-service
 app.use('/proff_cert', proxy(PRO_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/proff_cert${req.url}` }));
@@ -58,68 +48,6 @@ app.get('/health', (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
   });
 });
-
-// Live Concurrent Microservices Monitoring Handler
-const handleHealthMonitoring = async (req: Request, res: Response) => {
-  const servicesToProbe = [
-    { key: 'auth', name: 'Auth Svc', port: '5001', url: `${AUTH_SERVICE_URL}/health` },
-    { key: 'user', name: 'User Svc', port: '5002', url: `${USER_SERVICE_URL}/health` },
-    { key: 'pro', name: 'Pro Svc', port: '5003', url: `${PRO_SERVICE_URL}/health` },
-    { key: 'catalog', name: 'Catalog Svc', port: '5004', url: `${CATALOG_SERVICE_URL}/health` },
-    { key: 'booking', name: 'Booking Svc', port: '5005', url: `${BOOKING_SERVICE_URL}/health` },
-    { key: 'geo', name: 'Geo Telemetry', port: '5006', url: `${GEO_SERVICE_URL}/health` },
-    { key: 'safety', name: 'Safety SCC', port: '5007', url: `${SAFETY_SERVICE_URL}/health` },
-    { key: 'payment', name: 'Payment Svc', port: '5008', url: `${PAYMENT_SERVICE_URL}/health` },
-    { key: 'notif', name: 'Notif Svc', port: '5009', url: `${NOTIFICATION_SERVICE_URL}/health` },
-    { key: 'media', name: 'Media Vault', port: '5010', url: `${MEDIA_SERVICE_URL}/health` },
-    { key: 'postgres', name: 'PostgreSQL', port: '5432', url: `${SAFETY_SERVICE_URL}/health` },
-    { key: 'redis', name: 'Redis', port: '6379', url: `${GEO_SERVICE_URL}/health` },
-  ];
-
-  const results = await Promise.all(
-    servicesToProbe.map(async (svc) => {
-      const start = Date.now();
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 1500);
-        const resp = await fetch(svc.url, { signal: controller.signal });
-        clearTimeout(timer);
-        const latency = Date.now() - start;
-        return {
-          key: svc.key,
-          name: svc.name,
-          port: svc.port,
-          status: resp.ok ? 'UP' : 'DOWN',
-          latencyMs: latency,
-        };
-      } catch (_) {
-        return {
-          key: svc.key,
-          name: svc.name,
-          port: svc.port,
-          status: 'DOWN',
-          latencyMs: 0,
-        };
-      }
-    })
-  );
-
-  const healthyCount = results.filter((r) => r.status === 'UP').length;
-
-  res.json({
-    success: true,
-    data: {
-      healthyCount,
-      totalCount: results.length,
-      allHealthy: healthyCount === results.length,
-      services: results,
-      timestamp: new Date().toISOString(),
-    },
-  });
-};
-
-app.get('/health/monitoring', handleHealthMonitoring);
-app.get('/api/v1/admin/health-monitoring', handleHealthMonitoring);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SSE STREAMING PROXY — Must be registered BEFORE the generic notifications proxy
@@ -166,7 +94,7 @@ app.get('/api/v1/notifications/admin/sos-stream', (req: Request, res: Response) 
 
     proxyRes.on('error', (err) => {
       console.warn('⚠️ [GATEWAY-SSE] Proxy stream error:', err.message);
-      try { res.end(); } catch (_) {}
+      try { res.end(); } catch (_) { }
     });
   });
 
@@ -176,7 +104,7 @@ app.get('/api/v1/notifications/admin/sos-stream', (req: Request, res: Response) 
     try {
       res.write(`data: ${JSON.stringify({ type: 'ERROR', message: 'Notification service unavailable' })}\n\n`);
       res.end();
-    } catch (_) {}
+    } catch (_) { }
   });
 
   // If the client disconnects, abort the upstream request

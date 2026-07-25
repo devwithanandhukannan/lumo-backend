@@ -227,6 +227,35 @@ app.post('/api/v1/pro/request-service', authenticateToken, async (req: Authentic
   } catch (err) { next(err); }
 });
 
+// 5a. Get my custom service requests
+app.get('/api/v1/pro/custom-services/my-requests', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const proId = req.user!.userId;
+    const result = await pool.query(
+      `SELECT * FROM pending_service_requests WHERE pro_id = $1 ORDER BY created_at DESC`,
+      [proId]
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) { next(err); }
+});
+
+// 5b. Toggle custom service request active/inactive
+app.post('/api/v1/pro/custom-services/toggle', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { requestId, isActive } = req.body;
+    const proId = req.user!.userId;
+    if (!requestId) throw new AppError('requestId is required', 400);
+
+    const result = await pool.query(
+      `UPDATE pending_service_requests SET status = $1, updated_at = NOW()
+       WHERE id = $2 AND pro_id = $3 RETURNING *`,
+      [isActive ? 'PENDING_ADMIN_APPROVAL' : 'INACTIVE', requestId, proId]
+    );
+    if (result.rowCount === 0) throw new AppError('Service request not found', 404);
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) { next(err); }
+});
+
 // 6. Toggle Duty Status (Online / Offline)
 app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {

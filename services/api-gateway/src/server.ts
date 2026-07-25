@@ -108,11 +108,13 @@ const handleHealthMonitoring = async (req: Request, res: Response) => {
 
   res.json({
     success: true,
-    healthyCount,
-    totalCount: results.length,
-    allHealthy: healthyCount === results.length,
-    services: results,
-    timestamp: new Date().toISOString(),
+    data: {
+      healthyCount,
+      totalCount: results.length,
+      allHealthy: healthyCount === results.length,
+      services: results,
+      timestamp: new Date().toISOString(),
+    },
   });
 };
 

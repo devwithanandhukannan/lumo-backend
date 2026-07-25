@@ -38,4 +38,11 @@ app.post('/api/v1/users/locations', authenticateToken, async (req: Authenticated
 
 app.use(errorHandler);
 
-app.listen(PORT, () => console.log(`👤 User Service running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`👤 User Service running on port ${PORT}`));
+
+const handleShutdown = () => {
+  server.close(() => process.exit(0));
+};
+
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);

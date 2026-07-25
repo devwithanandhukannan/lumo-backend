@@ -31,4 +31,11 @@ app.post('/api/v1/media/upload-url', authenticateToken, async (req: Authenticate
 
 app.use(errorHandler);
 
-app.listen(PORT, () => console.log(`📁 Media Service running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`📁 Media Service running on port ${PORT}`));
+
+const handleShutdown = () => {
+  server.close(() => process.exit(0));
+};
+
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);

@@ -137,6 +137,21 @@ app.post('/api/v1/catalog/service-requests/:id/reject', async (req, res, next) =
   } catch (err) { next(err); }
 });
 
+app.delete('/api/v1/catalog/service-requests/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM pending_service_requests WHERE id = $1', [id]);
+    res.json({ success: true, message: 'Service request deleted' });
+  } catch (err) { next(err); }
+});
+
 app.use(errorHandler);
 
-app.listen(PORT, () => console.log(`📦 Catalog Service running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`📦 Catalog Service running on port ${PORT}`));
+
+const handleShutdown = () => {
+  server.close(() => process.exit(0));
+};
+
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);

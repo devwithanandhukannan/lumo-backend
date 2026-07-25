@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS pro_offered_services (
     custom_price NUMERIC(10,2),
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (pro_id, service_id)
 );
 

@@ -189,4 +189,11 @@ app.post('/api/v1/bookings/:id/complete', authenticateToken, requireRoles(['PROF
 
 app.use(errorHandler);
 
-app.listen(PORT, () => console.log(`📦 Booking Service running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`📦 Booking Service running on port ${PORT}`));
+
+const handleShutdown = () => {
+  server.close(() => process.exit(0));
+};
+
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);

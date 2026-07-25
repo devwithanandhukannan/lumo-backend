@@ -366,13 +366,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 const gracefulShutdown = (signal: string) => {
-  console.log(`Received ${signal}. Shutting down gracefully...`);
-  server.close(async () => {
-    console.log('HTTP server closed.');
-    await pool.end();
-    console.log('PostgreSQL connections closed.');
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 };
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

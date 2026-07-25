@@ -45,16 +45,20 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS requested_latitude NUMERIC(10,8);
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS requested_longitude NUMERIC(11,8);
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS location_change_status VARCHAR(30);
-        ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS location_change_reason TEXT;
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
+
+        ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+        ALTER TABLE pro_offered_services DROP CONSTRAINT IF EXISTS pro_offered_services_service_id_fkey;
+        ALTER TABLE pending_service_requests ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 
         CREATE TABLE IF NOT EXISTS pro_offered_services (
             id VARCHAR(50) PRIMARY KEY,
             pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            service_id VARCHAR(50) NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+            service_id VARCHAR(50) NOT NULL,
             custom_price NUMERIC(10,2),
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE (pro_id, service_id)
         );
 
@@ -80,6 +84,25 @@ export const initDatabaseTables = async (): Promise<void> => {
             category_id VARCHAR(50),
             status VARCHAR(30) DEFAULT 'PENDING_ADMIN_APPROVAL',
             admin_notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS bookings (
+            id VARCHAR(50) PRIMARY KEY,
+            customer_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            pro_id VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+            service_id VARCHAR(50) NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'REQUESTED',
+            scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            address_text TEXT NOT NULL DEFAULT '',
+            latitude DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            longitude DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            female_pro_preferred BOOLEAN DEFAULT FALSE,
+            start_otp VARCHAR(6) NOT NULL DEFAULT '1234',
+            end_otp VARCHAR(6) NOT NULL DEFAULT '5678',
+            total_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+            cancellation_reason TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );

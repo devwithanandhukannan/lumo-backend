@@ -18,6 +18,18 @@ app.use(express.json());
 
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Catalog Service' }));
 
+function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 app.get('/api/v1/catalog/categories', async (req, res, next) => {
   try {
     const categories = await pool.query('SELECT * FROM service_categories WHERE is_active = true ORDER BY name ASC');
@@ -28,6 +40,9 @@ app.get('/api/v1/catalog/categories', async (req, res, next) => {
 app.get('/api/v1/catalog/services', async (req, res, next) => {
   try {
     const categoryId = req.query.categoryId as string | undefined;
+    const latStr = req.query.latitude as string | undefined;
+    const lngStr = req.query.longitude as string | undefined;
+
     let query = 'SELECT s.*, c.name as category_name FROM services s JOIN service_categories c ON s.category_id = c.id WHERE s.is_active = true';
     const params: any[] = [];
 
@@ -37,8 +52,50 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
     }
     query += ' ORDER BY s.name ASC';
 
-    const services = await pool.query(query, params);
-    res.json({ success: true, data: services.rows });
+    const servicesRes = await pool.query(query, params);
+    let services = servicesRes.rows;
+
+    if (latStr && lngStr) {
+      const custLat = parseFloat(latStr);
+      const custLng = parseFloat(lngStr);
+
+      const prosRes = await pool.query(`
+        SELECT u.id as pro_id, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.service_id
+        FROM users u
+        JOIN professional_profiles p ON u.id = p.user_id
+        LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.is_active = true)
+        WHERE u.role = 'PROFESSIONAL'
+          AND p.verification_status = 'APPROVED'
+          AND p.is_online = true
+          AND p.is_busy = false
+      `);
+      const pros = prosRes.rows;
+
+      services = services.map(service => {
+        const matchingPros = pros.filter(pro => {
+          if (pro.service_id && pro.service_id !== service.id) return false;
+          const proLat = parseFloat(pro.latitude || pro.current_location?.latitude || '9.9312');
+          const proLng = parseFloat(pro.longitude || pro.current_location?.longitude || '76.2673');
+          const radiusKm = parseFloat(pro.coverage_radius_km || '50.00');
+          const dist = calculateDistanceKm(custLat, custLng, proLat, proLng);
+          return dist <= radiusKm;
+        });
+
+        return {
+          ...service,
+          available_pros_count: matchingPros.length,
+          is_available: matchingPros.length > 0,
+        };
+      });
+    } else {
+      services = services.map(service => ({
+        ...service,
+        available_pros_count: 1,
+        is_available: true,
+      }));
+    }
+
+    res.json({ success: true, data: services });
   } catch (err) { next(err); }
 });
 

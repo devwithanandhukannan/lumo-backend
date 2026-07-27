@@ -51,7 +51,7 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
 
     // Matching Matrix: Query candidate professionals who offer this service, are APPROVED, ONLINE, and NOT BUSY
     const candidateQuery = `
-      SELECT u.id as user_id, u.full_name, u.gender, p.coverage_radius_km, p.current_location, pos.custom_price
+      SELECT u.id as user_id, u.full_name, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.custom_price, pos.per_km_rate
       FROM users u
       JOIN professional_profiles p ON u.id = p.user_id
       LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1)
@@ -67,25 +67,33 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
     const candidatesRes = await pool.query(candidateQuery, queryArgs);
     const candidates = candidatesRes.rows;
 
-    let assignedProId: string | null = null;
-    let finalAmount = parseFloat(service.base_price);
+    const custLat = latitude || 9.9312;
+    const custLng = longitude || 76.2673;
 
     // Filter by coverage radius (default 50 km)
     const validPros = candidates.filter(pro => {
-      if (!pro.current_location) return true; // Default fallback if location not actively pinged
-      const proLat = pro.current_location.latitude || 9.9312;
-      const proLon = pro.current_location.longitude || 76.2673;
+      const proLat = parseFloat(pro.latitude || pro.current_location?.latitude || '9.9312');
+      const proLon = parseFloat(pro.longitude || pro.current_location?.longitude || '76.2673');
       const radiusKm = parseFloat(pro.coverage_radius_km || '50.00');
-      const dist = calculateDistanceKm(latitude || 9.9312, longitude || 76.2673, proLat, proLon);
+      const dist = calculateDistanceKm(custLat, custLng, proLat, proLon);
       return dist <= radiusKm;
     });
 
-    if (validPros.length > 0) {
-      assignedProId = validPros[0].user_id;
-      if (validPros[0].custom_price) {
-        finalAmount = parseFloat(validPros[0].custom_price);
-      }
+    if (validPros.length === 0) {
+      throw new AppError('No verified professionals currently available within dispatch range for this service in your area.', 400);
     }
+
+    const assignedPro = validPros[0];
+    const assignedProId = assignedPro.user_id;
+
+    const proLat = parseFloat(assignedPro.latitude || assignedPro.current_location?.latitude || '9.9312');
+    const proLon = parseFloat(assignedPro.longitude || assignedPro.current_location?.longitude || '76.2673');
+    const travelDistanceKm = Math.round(calculateDistanceKm(custLat, custLng, proLat, proLon) * 100) / 100;
+    const perKmRate = parseFloat(assignedPro.per_km_rate || service.per_km_rate || '15.00');
+    const travelCharge = Math.round(travelDistanceKm * perKmRate * 100) / 100;
+
+    const baseAmount = parseFloat(assignedPro.custom_price || service.base_price || '0');
+    const totalAmount = Math.round((baseAmount + travelCharge) * 100) / 100;
 
     const bookingId = `bk-${randomUUID().slice(0, 8)}`;
     const startOtp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -94,9 +102,9 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
     const insertRes = await pool.query(
-      `INSERT INTO bookings (id, customer_id, pro_id, service_id, status, scheduled_at, address_text, latitude, longitude, female_pro_preferred, start_otp, end_otp, total_amount, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
-      [bookingId, customerId, assignedProId, serviceId, status, scheduledAt || new Date().toISOString(), addressText, latitude || 9.9312, longitude || 76.2673, Boolean(femaleProPreferred), startOtp, endOtp, finalAmount, expiresAt]
+      `INSERT INTO bookings (id, customer_id, pro_id, service_id, status, scheduled_at, address_text, latitude, longitude, female_pro_preferred, start_otp, end_otp, base_amount, travel_distance_km, travel_charge, total_amount, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
+      [bookingId, customerId, assignedProId, serviceId, status, scheduledAt || new Date().toISOString(), addressText, custLat, custLng, Boolean(femaleProPreferred), startOtp, endOtp, baseAmount, travelDistanceKm, travelCharge, totalAmount, expiresAt]
     );
 
     res.status(201).json({ success: true, data: { ...insertRes.rows[0], service_name: service.name } });

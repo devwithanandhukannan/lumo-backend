@@ -48,8 +48,13 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS location_change_status VARCHAR(30);
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
 
+        ALTER TABLE services ADD COLUMN IF NOT EXISTS per_km_rate NUMERIC(10,2) DEFAULT 15.00;
+
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS travel_distance_km NUMERIC(6,2) DEFAULT 0.00;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS travel_charge NUMERIC(10,2) DEFAULT 0.00;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS base_amount NUMERIC(10,2) DEFAULT 0.00;
 
         CREATE TABLE IF NOT EXISTS reviews (
             id VARCHAR(50) PRIMARY KEY,
@@ -75,6 +80,7 @@ export const initDatabaseTables = async (): Promise<void> => {
             pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             service_id VARCHAR(50) NOT NULL,
             custom_price NUMERIC(10,2),
+            per_km_rate NUMERIC(10,2) DEFAULT 15.00,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW(),

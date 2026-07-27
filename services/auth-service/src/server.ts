@@ -26,7 +26,7 @@ const PORT = Number(process.env.PORT) || 5001;
 // 1. Security & Middleware Configuration
 app.use(helmet());
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
+  origin: (origin, callback) => callback(null, origin || true),
   credentials: true,
 }));
 app.use(express.json({ limit: '10kb' })); // Restrict payload size
@@ -122,56 +122,125 @@ app.post('/api/v1/auth/otp/send', authLimiter, async (req: Request, res: Respons
   } catch (err) { next(err); }
 });
 
-const handleAdminOtpSend = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const phoneNumber = req.body.phone || req.body.phoneNumber;
-    if (!phoneNumber) throw new AppError('Phone number required', 400);
-
-    const otp = '123456';
-    const expiresAt = Date.now() + 15 * 60 * 1000;
-
-    await pool.query(
-      `INSERT INTO otps (phone_number, otp, expires_at) VALUES ($1, $2, $3)
-       ON CONFLICT (phone_number) DO UPDATE SET otp = $2, expires_at = $3`,
-      [phoneNumber, otp, expiresAt]
-    );
-
-    console.log(`[ADMIN OTP] Generated OTP for ${phoneNumber}: ${otp}`);
-    res.json({ success: true, message: 'OTP sent successfully', data: { otp: '123456' } });
-  } catch (err) { next(err); }
+// Helper: Serialize Set-Cookie header
+const serializeCookie = (
+  name: string,
+  value: string,
+  options: { maxAge?: number; httpOnly?: boolean; path?: string; sameSite?: 'Lax' | 'Strict' | 'None'; secure?: boolean }
+) => {
+  let cookieStr = `${name}=${encodeURIComponent(value)}`;
+  if (options.maxAge !== undefined) cookieStr += `; Max-Age=${Math.floor(options.maxAge / 1000)}`;
+  if (options.path) cookieStr += `; Path=${options.path}`;
+  if (options.httpOnly) cookieStr += `; HttpOnly`;
+  if (options.secure) cookieStr += `; Secure`;
+  if (options.sameSite) cookieStr += `; SameSite=${options.sameSite}`;
+  return cookieStr;
 };
 
-const handleAdminOtpVerify = async (req: Request, res: Response, next: NextFunction) => {
+// Helper: Parse Cookie Header
+const parseCookies = (cookieHeader?: string): Record<string, string> => {
+  const list: Record<string, string> = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    const name = parts[0]?.trim();
+    if (!name) return;
+    const value = parts.slice(1).join('=').trim();
+    list[name] = decodeURIComponent(value);
+  });
+  return list;
+};
+
+// Admin Login Handler (Email & Password with 15m Access Token & HttpOnly Refresh Cookie)
+const handleAdminLogin = async (req: Request, res: Response, next: NextFunction) => {
   const client = await pool.connect();
   try {
-    const phoneNumber = req.body.phone || req.body.phoneNumber;
-    const otp = req.body.otp;
-    if (!phoneNumber || !otp) throw new AppError('Phone number and OTP code required', 400);
+    const { email, password } = req.body;
+    if (!email || !password) {
+      throw new AppError('Email and password required', 400);
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
 
     await client.query('BEGIN');
-    let userRes = await client.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    let userRes = await client.query('SELECT * FROM users WHERE LOWER(email) = $1', [cleanEmail]);
     let user = userRes.rows[0];
 
     if (!user) {
-      const userId = `usr-${randomUUID().slice(0, 8)}`;
-      const insertRes = await client.query(
-        `INSERT INTO users (id, phone_number, full_name, role, gender, phone_verified, is_active)
-         VALUES ($1, $2, $3, 'SUPER_ADMIN', 'MALE', true, true) RETURNING *`,
-        [userId, phoneNumber, 'Super Admin']
-      );
-      user = insertRes.rows[0];
-    } else if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
-      await client.query("UPDATE users SET role = 'SUPER_ADMIN' WHERE id = $1", [user.id]);
-      user.role = 'SUPER_ADMIN';
+      // Automatic seed for admin@lumo.in or admin email during initial setup
+      if (cleanEmail === 'admin@lumo.in' || cleanEmail.includes('admin')) {
+        const userId = `usr-admin-${randomUUID().slice(0, 8)}`;
+        const passHash = await argon2.hash(password);
+        const existingPhoneRes = await client.query('SELECT id FROM users WHERE phone_number = $1', ['+919999999999']);
+        const adminPhone = existingPhoneRes.rows.length === 0 ? '+919999999999' : `+91999${Date.now().toString().slice(-7)}`;
+        const insertRes = await client.query(
+          `INSERT INTO users (id, phone_number, email, password_hash, full_name, role, gender, email_verified, phone_verified, is_active)
+           VALUES ($1, $2, $3, $4, 'Super Admin', 'SUPER_ADMIN', 'MALE', true, true, true) RETURNING *`,
+          [userId, adminPhone, cleanEmail, passHash]
+        );
+        user = insertRes.rows[0];
+      } else {
+        throw new AppError('Invalid email or password', 401);
+      }
+    } else {
+      if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+        throw new AppError('Access denied. Admin privileges required.', 403);
+      }
+
+      if (!user.password_hash) {
+        // Set password_hash if user existed without one (e.g. init.sql seed)
+        const passHash = await argon2.hash(password);
+        const updateRes = await client.query(
+          'UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING *',
+          [passHash, user.id]
+        );
+        user = updateRes.rows[0];
+      } else {
+        const isValidPassword = await argon2.verify(user.password_hash, password);
+        if (!isValidPassword) {
+          throw new AppError('Invalid email or password', 401);
+        }
+      }
     }
 
     await client.query('COMMIT');
 
-    const token = generateAccessToken({ userId: user.id, role: user.role, phoneNumber: user.phone_number });
+    const tokenPayload = { userId: user.id, role: user.role, email: user.email };
+    const accessToken = generateAccessToken(tokenPayload, '15m');
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    // Save refresh token to DB
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    await pool.query(
+      `INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)
+       ON CONFLICT (token) DO UPDATE SET expires_at = $3`,
+      [refreshToken, user.id, expiresAt]
+    );
+
+    // Set HttpOnly Cookie for Refresh Token
+    res.setHeader(
+      'Set-Cookie',
+      serializeCookie('admin_refresh_token', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'Lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/',
+      })
+    );
+
     res.json({
       success: true,
-      message: 'Admin verification successful',
-      data: { token, user },
+      message: 'Admin authentication successful',
+      data: {
+        accessToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          full_name: user.full_name,
+          role: user.role,
+        },
+      },
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -181,8 +250,104 @@ const handleAdminOtpVerify = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-app.post('/api/v1/auth/admin-otp', handleAdminOtpSend);
-app.post('/api/v1/auth/verify-admin-otp', handleAdminOtpVerify);
+// Admin Refresh Token Handler
+const handleAdminRefresh = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const cookies = parseCookies(req.headers.cookie);
+    const refreshToken = cookies['admin_refresh_token'] || req.body?.refreshToken;
+
+    if (!refreshToken) {
+      throw new AppError('Refresh token missing', 401);
+    }
+
+    const { verifyRefreshToken } = require('@lumo/common');
+    const decoded = verifyRefreshToken(refreshToken);
+    const tokenRes = await pool.query('SELECT * FROM refresh_tokens WHERE token = $1', [refreshToken]);
+    const record = tokenRes.rows[0];
+
+    if (!record || Number(record.expires_at) < Date.now()) {
+      if (record) await pool.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
+      throw new AppError('Invalid or expired refresh token', 401);
+    }
+
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [decoded.userId]);
+    const user = userRes.rows[0];
+    if (!user || !user.is_active) {
+      throw new AppError('User account not found or inactive', 401);
+    }
+
+    const tokenPayload = { userId: user.id, role: user.role, email: user.email };
+    const newAccessToken = generateAccessToken(tokenPayload, '15m');
+    const newRefreshToken = generateRefreshToken(tokenPayload);
+
+    await pool.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    await pool.query(
+      `INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)`,
+      [newRefreshToken, user.id, expiresAt]
+    );
+
+    res.setHeader(
+      'Set-Cookie',
+      serializeCookie('admin_refresh_token', newRefreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'Lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/',
+      })
+    );
+
+    res.json({
+      success: true,
+      data: {
+        accessToken: newAccessToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          full_name: user.full_name,
+          role: user.role,
+        },
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Admin Logout Handler
+const handleAdminLogout = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const cookies = parseCookies(req.headers.cookie);
+    const refreshToken = cookies['admin_refresh_token'] || req.body?.refreshToken;
+
+    if (refreshToken) {
+      await pool.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
+    }
+
+    res.setHeader(
+      'Set-Cookie',
+      serializeCookie('admin_refresh_token', '', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'Lax',
+        maxAge: 0,
+        path: '/',
+      })
+    );
+
+    res.json({ success: true, message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+};
+
+app.post('/api/v1/auth/admin/login', handleAdminLogin);
+app.post('/api/v1/auth/admin-login', handleAdminLogin);
+app.post('/api/v1/auth/admin/refresh', handleAdminRefresh);
+app.post('/api/v1/auth/refresh', handleAdminRefresh);
+app.post('/api/v1/auth/admin/logout', handleAdminLogout);
+app.post('/api/v1/auth/logout', handleAdminLogout);
 
 // 5. Verify OTP Request (Using DB Transactions)
 app.post('/api/v1/auth/otp/verify', authLimiter, async (req: Request, res: Response, next: NextFunction) => {

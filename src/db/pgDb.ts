@@ -52,6 +52,7 @@ export const initDatabaseTables = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS sex VARCHAR(20);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+      ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL;
 
       CREATE TABLE IF NOT EXISTS otps (
           phone_number VARCHAR(20) PRIMARY KEY,

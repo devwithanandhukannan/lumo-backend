@@ -18,7 +18,10 @@ if (!fs.existsSync(PROFF_CERT_DIR)) {
   try { fs.mkdirSync(PROFF_CERT_DIR, { recursive: true }); } catch (_) { }
 }
 
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => callback(null, origin || true),
+  credentials: true,
+}));
 app.use(express.json({ limit: '50mb' }));
 
 console.log(`📂 [PRO-SERVICE] Mounted static vault: ${PROFF_CERT_DIR}`);
@@ -349,7 +352,7 @@ app.post('/api/v1/pro/request-service', handleCustomServiceRequest);
 app.post('/api/v1/pro/service-request', handleCustomServiceRequest);
 
 // 6. Toggle Duty Status (Online / Offline)
-app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+const handleDutyStatus = async (req: AuthenticatedRequest, res: any, next: any) => {
   try {
     const { isOnline, latitude, longitude } = req.body;
     const proId = req.user!.userId;
@@ -379,7 +382,10 @@ app.put('/api/v1/pro/duty-status', authenticateToken, async (req: AuthenticatedR
       data: updateRes.rows[0],
     });
   } catch (err) { next(err); }
-});
+};
+
+app.put('/api/v1/pro/duty-status', authenticateToken, handleDutyStatus);
+app.post('/api/v1/pro/duty-status', authenticateToken, handleDutyStatus);
 
 app.use(errorHandler);
 

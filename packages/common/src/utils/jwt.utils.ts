@@ -7,13 +7,14 @@ export interface TokenPayload {
   userId: string;
   role: UserRole;
   phoneNumber?: string;
+  email?: string;
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'lumo_super_secret_jwt_key_2026_safety_first';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'lumo_super_secret_refresh_jwt_key_2026';
 
-export const generateAccessToken = (payload: TokenPayload): string => {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+export const generateAccessToken = (payload: TokenPayload, expiresIn: string = '15m'): string => {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn as any });
 };
 
 export const generateRefreshToken = (payload: TokenPayload): string => {

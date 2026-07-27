@@ -12,9 +12,10 @@ const app = express();
 let PORT = Number(process.env.PORT) || 5000;
 
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => callback(null, origin || true),
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'Cookie'],
 }));
 app.use(express.json({ limit: '50mb' }));
 
@@ -55,9 +56,11 @@ app.get('/health', (req: Request, res: Response) => {
 // with pipe to preserve the streaming connection.
 // ─────────────────────────────────────────────────────────────────────────────
 app.options('/api/v1/notifications/admin/sos-stream', (req: Request, res: Response) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin || '*';
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Accept');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Accept, Cookie');
   res.sendStatus(204);
 });
 
@@ -67,13 +70,15 @@ app.get('/api/v1/notifications/admin/sos-stream', (req: Request, res: Response) 
   console.log(`🔴 [GATEWAY-SSE] Streaming SOS event pipe to admin → ${notifUrl.href}`);
 
   // Set SSE & CORS headers immediately on the gateway response
+  const origin = req.headers.origin || '*';
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering if any
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Accept');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Accept, Cookie');
   res.flushHeaders();
 
   const options = {
@@ -116,16 +121,39 @@ app.get('/api/v1/notifications/admin/sos-stream', (req: Request, res: Response) 
   proxyReq.end();
 });
 
+app.options('/api/v1/notifications/admin/sos-stream', (req: Request, res: Response) => {
+  const origin = req.headers.origin || '*';
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Accept, Cookie');
+  res.status(204).end();
+});
+
+// Helper for proxied microservice routes with credentials CORS header decoration
+const createServiceProxy = (targetUrl: string, pathPrefix: string) =>
+  proxy(targetUrl, {
+    proxyReqPathResolver: (req: Request) => `${pathPrefix}${req.url}`,
+    userResHeaderDecorator(headers: any, userReq: any) {
+      const origin = userReq.headers.origin;
+      if (origin) {
+        headers['access-control-allow-origin'] = origin;
+        headers['access-control-allow-credentials'] = 'true';
+      }
+      return headers;
+    },
+  });
+
 // Route mappings to microservices
-app.use('/api/v1/auth', proxy(AUTH_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/auth${req.url}` }));
-app.use('/api/v1/users', proxy(USER_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/users${req.url}` }));
-app.use('/api/v1/pro', proxy(PRO_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/pro${req.url}` }));
-app.use('/api/v1/catalog', proxy(CATALOG_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/catalog${req.url}` }));
-app.use('/api/v1/bookings', proxy(BOOKING_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/bookings${req.url}` }));
-app.use('/api/v1/geo', proxy(GEO_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/geo${req.url}` }));
-app.use('/api/v1/safety', proxy(SAFETY_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/safety${req.url}` }));
-app.use('/api/v1/notifications', proxy(NOTIFICATION_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/notifications${req.url}` }));
-app.use('/api/v1/admin', proxy(SAFETY_SERVICE_URL, { proxyReqPathResolver: (req: Request) => `/api/v1/admin${req.url}` }));
+app.use('/api/v1/auth', createServiceProxy(AUTH_SERVICE_URL, '/api/v1/auth'));
+app.use('/api/v1/users', createServiceProxy(USER_SERVICE_URL, '/api/v1/users'));
+app.use('/api/v1/pro', createServiceProxy(PRO_SERVICE_URL, '/api/v1/pro'));
+app.use('/api/v1/catalog', createServiceProxy(CATALOG_SERVICE_URL, '/api/v1/catalog'));
+app.use('/api/v1/bookings', createServiceProxy(BOOKING_SERVICE_URL, '/api/v1/bookings'));
+app.use('/api/v1/geo', createServiceProxy(GEO_SERVICE_URL, '/api/v1/geo'));
+app.use('/api/v1/safety', createServiceProxy(SAFETY_SERVICE_URL, '/api/v1/safety'));
+app.use('/api/v1/notifications', createServiceProxy(NOTIFICATION_SERVICE_URL, '/api/v1/notifications'));
+app.use('/api/v1/admin', createServiceProxy(SAFETY_SERVICE_URL, '/api/v1/admin'));
 
 const startServer = (targetPort: number) => {
   const server = app.listen(targetPort, '0.0.0.0', () => {

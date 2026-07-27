@@ -13,7 +13,10 @@ const PORT = process.env.PORT || 5007;
 
 const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:5009';
 
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => callback(null, origin || true),
+  credentials: true,
+}));
 app.use(express.json());
 
 // Self-healing database initialization
@@ -59,19 +62,46 @@ app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Safety Servi
 // 1. Trigger Emergency SOS Alert Handler
 const handleSosTrigger = async (req: any, res: any, next: any) => {
   try {
-    const { bookingId, latitude, longitude, notes } = req.body;
-    if (latitude === undefined || longitude === undefined) {
-      throw new AppError('Latitude and longitude required for SOS trigger', 400);
-    }
+    const { bookingId, notes } = req.body;
+    let latitude = req.body.latitude;
+    let longitude = req.body.longitude;
 
     const sosId = `sos-${randomUUID().slice(0, 8)}`;
     const userId = req.user?.userId || 'usr-009088e1';
     const userRole = req.user?.role || 'PROFESSIONAL';
 
+    if (latitude === undefined || longitude === undefined || latitude === null || longitude === null) {
+      // Fallback query from professional profile or user location
+      const fallbackRes = await pool.query(
+        `SELECT p.current_location, u.latitude, u.longitude
+         FROM users u
+         LEFT JOIN professional_profiles p ON u.id = p.user_id
+         WHERE u.id = $1`,
+        [userId]
+      );
+      const row = fallbackRes.rows[0];
+      if (row) {
+        if (row.current_location) {
+          try {
+            const loc = typeof row.current_location === 'string' ? JSON.parse(row.current_location) : row.current_location;
+            latitude = loc.lat || loc.latitude;
+            longitude = loc.lng || loc.longitude;
+          } catch (_) {}
+        }
+        if (latitude === undefined && row.latitude !== null) {
+          latitude = parseFloat(row.latitude);
+          longitude = parseFloat(row.longitude);
+        }
+      }
+    }
+
+    const finalLat = latitude !== undefined && latitude !== null ? parseFloat(latitude) : 12.9716;
+    const finalLng = longitude !== undefined && longitude !== null ? parseFloat(longitude) : 77.5946;
+
     const result = await pool.query(
       `INSERT INTO sos_alerts (id, booking_id, triggered_by_user_id, trigger_latitude, trigger_longitude, status, notes)
        VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6) RETURNING *`,
-      [sosId, bookingId || null, userId, parseFloat(latitude), parseFloat(longitude), notes || 'Emergency SOS Pressed']
+      [sosId, bookingId || null, userId, finalLat, finalLng, notes || 'Emergency SOS Pressed']
     );
 
     const sosAlert = result.rows[0];
@@ -167,6 +197,47 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
       }
     } catch (_) {}
 
+    // Fetch all offered services with custom prices for all pros
+    let offeredServicesByPro: Record<string, any[]> = {};
+    try {
+      const offeredRes = await pool.query(
+        `SELECT pos.pro_id, pos.service_id, pos.custom_price, pos.is_active, s.name as service_name, s.base_price
+         FROM pro_offered_services pos
+         JOIN services s ON pos.service_id = s.id`
+      );
+      for (const row of offeredRes.rows) {
+        if (!offeredServicesByPro[row.pro_id]) offeredServicesByPro[row.pro_id] = [];
+        offeredServicesByPro[row.pro_id].push({
+          service_id: row.service_id,
+          service_name: row.service_name,
+          base_price: parseFloat(row.base_price || '0'),
+          custom_price: row.custom_price !== null ? parseFloat(row.custom_price) : null,
+          is_active: row.is_active,
+        });
+      }
+    } catch (_) {}
+
+    // Fetch all custom service requests submitted by pros
+    let customRequestsByPro: Record<string, any[]> = {};
+    try {
+      const customRes = await pool.query(
+        `SELECT id, pro_id, service_name, description, suggested_price, status, created_at
+         FROM pending_service_requests
+         ORDER BY created_at DESC`
+      );
+      for (const row of customRes.rows) {
+        if (!customRequestsByPro[row.pro_id]) customRequestsByPro[row.pro_id] = [];
+        customRequestsByPro[row.pro_id].push({
+          id: row.id,
+          service_name: row.service_name,
+          description: row.description,
+          suggested_price: row.suggested_price !== null ? parseFloat(row.suggested_price) : null,
+          status: row.status,
+          created_at: row.created_at,
+        });
+      }
+    } catch (_) {}
+
     const data = pros.rows.map((p) => {
       let rawDocs = p.documents;
       if (typeof rawDocs === 'string') {
@@ -206,6 +277,8 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
         coverage_radius_km: parseFloat(p.coverage_radius_km || '50.00'),
         latitude: p.latitude !== null && p.latitude !== undefined ? parseFloat(p.latitude) : null,
         longitude: p.longitude !== null && p.longitude !== undefined ? parseFloat(p.longitude) : null,
+        offered_services: offeredServicesByPro[p.user_id] || [],
+        custom_service_requests: customRequestsByPro[p.user_id] || [],
       };
     });
 

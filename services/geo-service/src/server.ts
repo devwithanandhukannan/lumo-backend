@@ -8,7 +8,10 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5006;
 
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => callback(null, origin || true),
+  credentials: true,
+}));
 app.use(express.json());
 
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Geo & Location Service' }));

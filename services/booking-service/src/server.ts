@@ -10,7 +10,10 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5005;
 
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => callback(null, origin || true),
+  credentials: true,
+}));
 app.use(express.json());
 
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Booking Service' }));
@@ -32,7 +35,7 @@ function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: num
 app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const customerId = req.user!.userId;
-    const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred } = req.body;
+    const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, targetProId } = req.body;
 
     const srvRes = await pool.query('SELECT * FROM services WHERE id = $1', [serviceId]);
     const service = srvRes.rows[0];
@@ -49,9 +52,11 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
         AND p.is_online = true
         AND p.is_busy = false
         ${femaleProPreferred ? "AND u.gender = 'FEMALE'" : ''}
+        ${targetProId ? "AND u.id = $2" : ''}
     `;
 
-    const candidatesRes = await pool.query(candidateQuery, [serviceId]);
+    const queryArgs = targetProId ? [serviceId, targetProId] : [serviceId];
+    const candidatesRes = await pool.query(candidateQuery, queryArgs);
     const candidates = candidatesRes.rows;
 
     let assignedProId: string | null = null;
@@ -77,19 +82,40 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
     const bookingId = `bk-${randomUUID().slice(0, 8)}`;
     const startOtp = Math.floor(1000 + Math.random() * 9000).toString();
     const endOtp = Math.floor(1000 + Math.random() * 9000).toString();
-    const status = assignedProId ? 'ACCEPTED' : 'REQUESTED';
+    const status = 'REQUESTED'; // 5-minute request countdown window
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
     const insertRes = await pool.query(
-      `INSERT INTO bookings (id, customer_id, pro_id, service_id, status, scheduled_at, address_text, latitude, longitude, female_pro_preferred, start_otp, end_otp, total_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-      [bookingId, customerId, assignedProId, serviceId, status, scheduledAt || new Date().toISOString(), addressText, latitude || 9.9312, longitude || 76.2673, Boolean(femaleProPreferred), startOtp, endOtp, finalAmount]
+      `INSERT INTO bookings (id, customer_id, pro_id, service_id, status, scheduled_at, address_text, latitude, longitude, female_pro_preferred, start_otp, end_otp, total_amount, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+      [bookingId, customerId, assignedProId, serviceId, status, scheduledAt || new Date().toISOString(), addressText, latitude || 9.9312, longitude || 76.2673, Boolean(femaleProPreferred), startOtp, endOtp, finalAmount, expiresAt]
     );
 
-    if (assignedProId) {
-      await pool.query('UPDATE professional_profiles SET is_busy = true WHERE user_id = $1', [assignedProId]);
-    }
-
     res.status(201).json({ success: true, data: { ...insertRes.rows[0], service_name: service.name } });
+  } catch (err) { next(err); }
+});
+
+// Admin All Bookings Endpoint (For Admin Operations Portal)
+app.get('/api/v1/bookings/admin/all', authenticateToken, requireRoles(['SUPER_ADMIN', 'ADMIN']), async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const bookings = await pool.query(
+      `SELECT b.*,
+              s.name as service_name,
+              cu.full_name as customer_name,
+              cu.phone_number as customer_phone,
+              pu.full_name as pro_name,
+              pu.phone_number as pro_phone,
+              pp.rating_avg as pro_rating,
+              pp.verification_status as pro_verification
+       FROM bookings b
+       LEFT JOIN services s ON b.service_id = s.id
+       LEFT JOIN users cu ON b.customer_id = cu.id
+       LEFT JOIN users pu ON b.pro_id = pu.id
+       LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
+       ORDER BY b.created_at DESC`
+    );
+
+    res.json({ success: true, data: bookings.rows });
   } catch (err) { next(err); }
 });
 
@@ -101,10 +127,13 @@ app.get('/api/v1/bookings/my-bookings', authenticateToken, async (req: Authentic
     const column = role === 'PROFESSIONAL' ? 'pro_id' : 'customer_id';
 
     const bookings = await pool.query(
-      `SELECT b.*, s.name as service_name, u.full_name as customer_name, u.phone_number as customer_phone
+      `SELECT b.*, s.name as service_name, u.full_name as customer_name, u.phone_number as customer_phone,
+              pu.full_name as pro_name, pu.avatar_url as pro_avatar, pp.rating_avg as pro_rating, pp.verification_status as pro_verification
        FROM bookings b
-       JOIN services s ON b.service_id = s.id
-       JOIN users u ON b.customer_id = u.id
+       LEFT JOIN services s ON b.service_id = s.id
+       LEFT JOIN users u ON b.customer_id = u.id
+       LEFT JOIN users pu ON b.pro_id = pu.id
+       LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
        WHERE b.${column} = $1 OR (b.pro_id IS NULL AND $2 = 'PROFESSIONAL' AND b.status = 'REQUESTED')
        ORDER BY b.created_at DESC`,
       [userId, role]
@@ -184,6 +213,62 @@ app.post('/api/v1/bookings/:id/complete', authenticateToken, requireRoles(['PROF
     }
 
     res.json({ success: true, message: 'End OTP verified. Job completed successfully.', data: updateRes.rows[0] });
+  } catch (err) { next(err); }
+});
+
+// 6. Submit Customer Rating & Review
+app.post('/api/v1/bookings/:id/review', authenticateToken, requireRoles(['CUSTOMER']), async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const customerId = req.user!.userId;
+    const bookingId = req.params.id;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      throw new AppError('Rating must be an integer between 1 and 5', 400);
+    }
+
+    const bRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
+    const booking = bRes.rows[0];
+    if (!booking) throw new AppError('Booking not found', 404);
+
+    const revId = `rev-${randomUUID().slice(0, 8)}`;
+    await pool.query(
+      `INSERT INTO reviews (id, booking_id, customer_id, pro_id, rating, comment)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [revId, bookingId, customerId, booking.pro_id, rating, comment || '']
+    );
+
+    if (booking.pro_id) {
+      const avgRes = await pool.query(
+        `SELECT AVG(rating)::numeric(3,2) as avg_rating FROM reviews WHERE pro_id = $1`,
+        [booking.pro_id]
+      );
+      if (avgRes.rows[0]?.avg_rating) {
+        await pool.query('UPDATE professional_profiles SET rating_avg = $1 WHERE user_id = $2', [avgRes.rows[0].avg_rating, booking.pro_id]);
+      }
+    }
+
+    res.status(201).json({ success: true, message: 'Review submitted successfully' });
+  } catch (err) { next(err); }
+});
+
+// 7. Submit Booking Report
+app.post('/api/v1/bookings/:id/report', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const reporterId = req.user!.userId;
+    const bookingId = req.params.id;
+    const { reason } = req.body;
+
+    if (!reason || !reason.trim()) throw new AppError('Report reason required', 400);
+
+    const reportId = `rep-${randomUUID().slice(0, 8)}`;
+    await pool.query(
+      `INSERT INTO booking_reports (id, booking_id, reporter_id, reason)
+       VALUES ($1, $2, $3, $4)`,
+      [reportId, bookingId, reporterId, reason.trim()]
+    );
+
+    res.status(201).json({ success: true, message: 'Report logged successfully and sent to Safety Control Center.' });
   } catch (err) { next(err); }
 });
 

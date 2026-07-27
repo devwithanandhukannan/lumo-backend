@@ -35,6 +35,7 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude NUMERIC(11,8);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+        ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL;
 
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS coverage_radius_km NUMERIC(5,2) DEFAULT 50.00;
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region VARCHAR(100);
@@ -47,9 +48,27 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS location_change_status VARCHAR(30);
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
 
-        ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-        ALTER TABLE pro_offered_services DROP CONSTRAINT IF EXISTS pro_offered_services_service_id_fkey;
-        ALTER TABLE pending_service_requests ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+
+        CREATE TABLE IF NOT EXISTS reviews (
+            id VARCHAR(50) PRIMARY KEY,
+            booking_id VARCHAR(50) NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+            customer_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            pro_id VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+            rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+            comment TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS booking_reports (
+            id VARCHAR(50) PRIMARY KEY,
+            booking_id VARCHAR(50) NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+            reporter_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL,
+            status VARCHAR(30) DEFAULT 'OPEN',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
 
         CREATE TABLE IF NOT EXISTS pro_offered_services (
             id VARCHAR(50) PRIMARY KEY,

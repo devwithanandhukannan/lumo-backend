@@ -8,9 +8,10 @@ const app = express();
 const PORT = process.env.PORT || 5009;
 
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => callback(null, origin || true),
+  credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'Cookie'],
 }));
 app.use(express.json());
 

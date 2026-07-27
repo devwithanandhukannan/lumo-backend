@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { pool } from '@lumo/database';
+import { pool, initDatabaseTables } from '@lumo/database';
 import { authenticateToken, requireRoles, AuthenticatedRequest, AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
 
@@ -9,6 +9,11 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5005;
+
+// Self-healing database migration check
+initDatabaseTables()
+  .then(() => pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;'))
+  .catch((err) => console.warn('⚠️ Database migration check warning:', err.message));
 
 app.use(cors({
   origin: (origin, callback) => callback(null, origin || true),
@@ -36,6 +41,9 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
   try {
     const customerId = req.user!.userId;
     const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, targetProId } = req.body;
+
+    // Ensure self-healing column migration
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;').catch(() => {});
 
     const srvRes = await pool.query('SELECT * FROM services WHERE id = $1', [serviceId]);
     const service = srvRes.rows[0];

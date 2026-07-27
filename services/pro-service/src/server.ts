@@ -365,15 +365,16 @@ const handleDutyStatus = async (req: AuthenticatedRequest, res: any, next: any) 
       throw new AppError('Cannot go online. Your profile verification status is PENDING or SUSPENDED.', 403);
     }
 
-    const locJson = (latitude !== undefined && longitude !== undefined)
-      ? JSON.stringify({ lat: latitude, lng: longitude, updatedAt: new Date().toISOString() })
-      : pro.current_location;
+    const lat = latitude !== undefined && latitude !== null ? parseFloat(latitude) : (pro.latitude ? parseFloat(pro.latitude) : (pro.current_location?.latitude || pro.current_location?.lat || 9.9312));
+    const lng = longitude !== undefined && longitude !== null ? parseFloat(longitude) : (pro.longitude ? parseFloat(pro.longitude) : (pro.current_location?.longitude || pro.current_location?.lng || 76.2673));
+
+    const locJson = JSON.stringify({ latitude: lat, longitude: lng, lat: lat, lng: lng, updatedAt: new Date().toISOString() });
 
     const updateRes = await pool.query(
       `UPDATE professional_profiles
-       SET is_online = $1, current_location = $2, updated_at = NOW()
-       WHERE user_id = $3 RETURNING *`,
-      [Boolean(isOnline), locJson, proId]
+       SET is_online = $1, current_location = $2, latitude = $3, longitude = $4, updated_at = NOW()
+       WHERE user_id = $5 RETURNING *`,
+      [Boolean(isOnline), locJson, lat, lng, proId]
     );
 
     res.json({

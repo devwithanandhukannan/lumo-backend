@@ -49,31 +49,38 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
     const service = srvRes.rows[0];
     if (!service) throw new AppError('Service not found', 404);
 
-    // Matching Matrix: Query candidate professionals who offer this service, are APPROVED, ONLINE, and NOT BUSY
+    // Matching Matrix: Query candidate professionals who offer this service, are APPROVED/PENDING, and NOT BUSY
     const candidateQuery = `
       SELECT u.id as user_id, u.full_name, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.custom_price, pos.per_km_rate
       FROM users u
       JOIN professional_profiles p ON u.id = p.user_id
       LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1)
       WHERE u.role = 'PROFESSIONAL'
-        AND p.verification_status = 'APPROVED'
-        AND p.is_online = true
+        AND p.verification_status IN ('APPROVED', 'PENDING')
         AND p.is_busy = false
-        ${femaleProPreferred ? "AND u.gender = 'FEMALE'" : ''}
         ${targetProId ? "AND u.id = $2" : ''}
     `;
 
     const queryArgs = targetProId ? [serviceId, targetProId] : [serviceId];
     const candidatesRes = await pool.query(candidateQuery, queryArgs);
-    const candidates = candidatesRes.rows;
+    let candidates = candidatesRes.rows;
+
+    if (femaleProPreferred) {
+      const femaleCandidates = candidates.filter(c => (c.gender || '').toUpperCase() === 'FEMALE');
+      if (femaleCandidates.length > 0) candidates = femaleCandidates;
+    }
 
     const custLat = latitude || 9.9312;
     const custLng = longitude || 76.2673;
 
     // Filter by coverage radius (default 50 km)
     const validPros = candidates.filter(pro => {
-      const proLat = parseFloat(pro.latitude || pro.current_location?.latitude || '9.9312');
-      const proLon = parseFloat(pro.longitude || pro.current_location?.longitude || '76.2673');
+      let curLoc = pro.current_location;
+      if (typeof curLoc === 'string') {
+        try { curLoc = JSON.parse(curLoc); } catch (_) {}
+      }
+      const proLat = parseFloat(pro.latitude || curLoc?.latitude || curLoc?.lat || custLat.toString());
+      const proLon = parseFloat(pro.longitude || curLoc?.longitude || curLoc?.lng || custLng.toString());
       const radiusKm = parseFloat(pro.coverage_radius_km || '50.00');
       const dist = calculateDistanceKm(custLat, custLng, proLat, proLon);
       return dist <= radiusKm;
@@ -86,8 +93,12 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
     const assignedPro = validPros[0];
     const assignedProId = assignedPro.user_id;
 
-    const proLat = parseFloat(assignedPro.latitude || assignedPro.current_location?.latitude || '9.9312');
-    const proLon = parseFloat(assignedPro.longitude || assignedPro.current_location?.longitude || '76.2673');
+    let assignedCurLoc = assignedPro.current_location;
+    if (typeof assignedCurLoc === 'string') {
+      try { assignedCurLoc = JSON.parse(assignedCurLoc); } catch (_) {}
+    }
+    const proLat = parseFloat(assignedPro.latitude || assignedCurLoc?.latitude || assignedCurLoc?.lat || custLat.toString());
+    const proLon = parseFloat(assignedPro.longitude || assignedCurLoc?.longitude || assignedCurLoc?.lng || custLng.toString());
     const travelDistanceKm = Math.round(calculateDistanceKm(custLat, custLng, proLat, proLon) * 100) / 100;
     const perKmRate = parseFloat(assignedPro.per_km_rate || service.per_km_rate || '15.00');
     const travelCharge = Math.round(travelDistanceKm * perKmRate * 100) / 100;

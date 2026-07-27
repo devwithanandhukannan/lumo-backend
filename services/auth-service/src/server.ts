@@ -397,13 +397,14 @@ app.post('/api/v1/auth/otp/verify', authLimiter, async (req: Request, res: Respo
     await client.query('DELETE FROM otps WHERE phone_number = $1', [phoneNumber]);
     await client.query('COMMIT');
 
-    const isRegistered = Boolean(
-      user.full_name &&
-      user.full_name !== 'New User' &&
-      user.full_name !== 'Professional' &&
-      (user.service_area || pro?.service_area) &&
-      pro?.face_verification_url
-    );
+    const isRegistered = user.role === 'CUSTOMER'
+      ? Boolean(user.full_name && user.full_name !== 'New User' && user.full_name !== 'Customer')
+      : Boolean(
+          user.full_name &&
+          user.full_name !== 'New User' &&
+          user.full_name !== 'Professional' &&
+          pro?.face_verification_url
+        );
 
     const payload = { userId: user.id, role: user.role, phoneNumber: user.phone_number };
     const accessToken = generateAccessToken(payload);

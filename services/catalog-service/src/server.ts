@@ -60,22 +60,23 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
       const custLng = parseFloat(lngStr);
 
       const prosRes = await pool.query(`
-        SELECT u.id as pro_id, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.service_id
+        SELECT u.id as pro_id, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude
         FROM users u
         JOIN professional_profiles p ON u.id = p.user_id
-        LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.is_active = true)
         WHERE u.role = 'PROFESSIONAL'
-          AND p.verification_status = 'APPROVED'
-          AND p.is_online = true
+          AND p.verification_status IN ('APPROVED', 'PENDING')
           AND p.is_busy = false
       `);
       const pros = prosRes.rows;
 
       services = services.map(service => {
         const matchingPros = pros.filter(pro => {
-          if (pro.service_id && pro.service_id !== service.id) return false;
-          const proLat = parseFloat(pro.latitude || pro.current_location?.latitude || '9.9312');
-          const proLng = parseFloat(pro.longitude || pro.current_location?.longitude || '76.2673');
+          let curLoc = pro.current_location;
+          if (typeof curLoc === 'string') {
+            try { curLoc = JSON.parse(curLoc); } catch (_) {}
+          }
+          const proLat = parseFloat(pro.latitude || curLoc?.latitude || curLoc?.lat || custLat.toString());
+          const proLng = parseFloat(pro.longitude || curLoc?.longitude || curLoc?.lng || custLng.toString());
           const radiusKm = parseFloat(pro.coverage_radius_km || '50.00');
           const dist = calculateDistanceKm(custLat, custLng, proLat, proLng);
           return dist <= radiusKm;

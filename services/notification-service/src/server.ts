@@ -125,6 +125,65 @@ app.post('/api/v1/notifications/broadcast-sos', (req: Request, res: Response) =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 3. Real-Time Pro GPS Location Tracking Stream (SSE per Booking)
+// ─────────────────────────────────────────────────────────────────────────────
+interface LocationClient {
+  id: string;
+  bookingId: string;
+  res: Response;
+  heartbeatTimer: ReturnType<typeof setInterval>;
+}
+
+const locationClients: Map<string, LocationClient> = new Map();
+
+app.get('/api/v1/notifications/location-stream/:bookingId', (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  const clientId = `cust-${bookingId}-${Date.now()}`;
+  res.write(`data: ${JSON.stringify({ type: 'LOCATION_STREAM_ESTABLISHED', bookingId })}\n\n`);
+
+  const heartbeatTimer = setInterval(() => {
+    try { res.write(`: heartbeat\n\n`); } catch (_) { locationClients.delete(clientId); }
+  }, 15000);
+
+  locationClients.set(clientId, { id: clientId, bookingId, res, heartbeatTimer });
+  req.on('close', () => { clearInterval(heartbeatTimer); locationClients.delete(clientId); });
+});
+
+app.post('/api/v1/notifications/location-update', (req: Request, res: Response) => {
+  try {
+    const { bookingId, latitude, longitude, proId } = req.body;
+    if (!bookingId || !latitude || !longitude) {
+      return res.status(400).json({ success: false, message: 'bookingId, latitude, and longitude required' });
+    }
+
+    const payload = `data: ${JSON.stringify({
+      type: 'PRO_LOCATION_UPDATE',
+      bookingId,
+      proId,
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      timestamp: new Date().toISOString(),
+    })}\n\n`;
+
+    locationClients.forEach((client, clientId) => {
+      if (client.bookingId === bookingId) {
+        try { client.res.write(payload); } catch (_) { locationClients.delete(clientId); }
+      }
+    });
+
+    res.json({ success: true, message: 'Location update broadcasted' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Server startup
 // ─────────────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => console.log(`🔔 Notification Service running on port ${PORT}`));

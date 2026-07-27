@@ -290,6 +290,28 @@ app.post('/api/v1/bookings/:id/report', authenticateToken, async (req: Authentic
 
 app.use(errorHandler);
 
+// Background Worker: Auto-Expire unaccepted bookings past their 5-minute timer
+setInterval(async () => {
+  try {
+    const expiredRes = await pool.query(
+      `UPDATE bookings
+       SET status = 'EXPIRED', cancel_reason = 'Pro request acceptance timed out after 5 minutes'
+       WHERE status = 'REQUESTED' AND expires_at < NOW()
+       RETURNING id, pro_id`
+    );
+    if (expiredRes.rowCount && expiredRes.rowCount > 0) {
+      console.log(`⏱️ [AUTO-EXPIRY] Expired ${expiredRes.rowCount} stale booking requests.`);
+      for (const row of expiredRes.rows) {
+        if (row.pro_id) {
+          await pool.query('UPDATE professional_profiles SET is_busy = false WHERE user_id = $1', [row.pro_id]);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('❌ [AUTO-EXPIRY WORKER ERROR]:', err.message);
+  }
+}, 15000);
+
 const server = app.listen(PORT, () => console.log(`📦 Booking Service running on port ${PORT}`));
 
 const handleShutdown = () => {

@@ -118,13 +118,16 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
       SELECT u.id, u.full_name, u.gender,
              pp.latitude, pp.longitude, pp.rating_avg,
              pp.total_jobs_completed, pp.coverage_radius_km,
-             pos.km_charge_per_km, pos.custom_price as service_price
-      FROM pro_offered_services pos
-      JOIN professional_profiles pp ON pp.user_id = pos.pro_id
-      JOIN users u ON u.id = pos.pro_id
-      WHERE pos.service_id = $1
-        AND pos.is_active = true
+             COALESCE(pos.km_charge_per_km, pos.per_km_rate, s.per_km_rate, 15.00) as km_charge_per_km,
+             COALESCE(pos.custom_price, s.base_price, 200.00) as service_price
+      FROM users u
+      JOIN professional_profiles pp ON pp.user_id = u.id
+      JOIN services s ON s.id = $1
+      LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1)
+      WHERE u.role = 'PROFESSIONAL'
+        AND pp.verification_status IN ('APPROVED', 'PENDING')
         AND pp.is_blacklisted = false
+        AND (pos.is_active IS NULL OR pos.is_active = true)
         ${femaleOnly ? "AND u.gender = 'FEMALE'" : ''}
     `;
 
@@ -133,11 +136,11 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
 
     const nearbyPros = pros
       .map((p) => {
-        const pLat = parseFloat(p.latitude) || customerLat;
-        const pLng = parseFloat(p.longitude) || customerLng;
+        const pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : customerLat;
+        const pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : customerLng;
         const distKm = calculateDistanceKm(customerLat, customerLng, pLat, pLng);
         const kmCharge = parseFloat(p.km_charge_per_km) || 15;
-        const basePrice = parseFloat(p.service_price) || 0;
+        const basePrice = parseFloat(p.service_price) || 200;
         const travelCharge = parseFloat((distKm * kmCharge).toFixed(2));
         const estimatedTotal = parseFloat((basePrice + travelCharge).toFixed(2));
         return {

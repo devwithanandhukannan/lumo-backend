@@ -44,6 +44,8 @@ app.get('/api/v1/users/admin/customers', async (req, res, next) => {
   try {
     const customersRes = await pool.query(
       `SELECT u.id, u.phone_number, u.email, u.full_name, u.gender, u.is_active, u.created_at,
+              u.service_area, u.latitude, u.longitude,
+              (SELECT address_text FROM saved_locations WHERE user_id = u.id ORDER BY is_default DESC, created_at DESC LIMIT 1) as address_text,
               COUNT(b.id) as total_bookings,
               COALESCE(SUM(CASE WHEN b.status = 'COMPLETED' THEN b.total_amount ELSE 0 END), 0) as total_spent
        FROM users u
@@ -58,6 +60,7 @@ app.get('/api/v1/users/admin/customers', async (req, res, next) => {
       email: u.email,
       fullName: u.full_name || 'Customer',
       gender: u.gender || 'OTHER',
+      location: u.service_area || u.address_text || (u.latitude && u.longitude ? `(${parseFloat(u.latitude).toFixed(4)}, ${parseFloat(u.longitude).toFixed(4)})` : 'Thottikkanam, Kerala'),
       isActive: u.is_active,
       createdAt: u.created_at,
       totalBookings: parseInt(u.total_bookings, 10) || 0,

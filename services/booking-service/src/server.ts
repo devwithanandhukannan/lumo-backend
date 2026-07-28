@@ -71,8 +71,8 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
       if (femaleCandidates.length > 0) candidates = femaleCandidates;
     }
 
-    const custLat = latitude || 9.9312;
-    const custLng = longitude || 76.2673;
+    const custLat = latitude || 9.9484;
+    const custLng = longitude || 77.1931;
 
     // Filter by coverage radius (default 50 km)
     const validPros = candidates.filter(pro => {

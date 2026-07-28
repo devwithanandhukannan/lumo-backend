@@ -670,12 +670,15 @@ app.post('/api/v1/auth/firebase-login', async (req: Request, res: Response, next
 // 8. Complete Customer Profile
 app.post('/api/v1/auth/customer/complete-profile', authenticateToken, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const { fullName, name, age, sex, gender, email } = req.body;
+    const { fullName, name, age, sex, gender, email, addressText, serviceArea, latitude, longitude } = req.body;
     const userId = req.user!.userId;
     const finalName = fullName || name;
     if (!finalName) throw new AppError('Full name is required', 400);
 
     const userGender = sex || gender || 'OTHER';
+    const areaText = serviceArea || addressText || 'Thottikkanam, Kerala';
+    const latVal = latitude ? latitude.toString() : '9.94840000';
+    const lngVal = longitude ? longitude.toString() : '77.19310000';
 
     const updateRes = await pool.query(
       `UPDATE users
@@ -684,15 +687,27 @@ app.post('/api/v1/auth/customer/complete-profile', authenticateToken, async (req
            gender = $3,
            sex = $3,
            email = COALESCE($4, email),
+           service_area = COALESCE($5, service_area),
+           latitude = COALESCE($6, latitude),
+           longitude = COALESCE($7, longitude),
            role = 'CUSTOMER',
            updated_at = NOW()
-       WHERE id = $5 RETURNING *`,
-      [finalName, age ? parseInt(age, 10) : null, userGender, email || null, userId]
+       WHERE id = $8 RETURNING *`,
+      [finalName, age ? parseInt(age, 10) : null, userGender, email || null, areaText, latVal, lngVal, userId]
     );
 
     if (updateRes.rowCount === 0) throw new AppError('Customer user account not found', 404);
 
-    console.log(`👤 [CUSTOMER-PROFILE-COMPLETED] Saved customer ${finalName} (${userId}) into PostgreSQL database`);
+    // Save location into saved_locations
+    const locId = `loc-${randomUUID().slice(0, 8)}`;
+    await pool.query(
+      `INSERT INTO saved_locations (id, user_id, label, address_text, latitude, longitude, is_default)
+       VALUES ($1, $2, 'Home', $3, $4, $5, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [locId, userId, areaText, parseFloat(latVal), parseFloat(lngVal)]
+    ).catch(() => {});
+
+    console.log(`👤 [CUSTOMER-PROFILE-COMPLETED] Saved customer ${finalName} (${userId}) location [${areaText} (${latVal}, ${lngVal})] into PostgreSQL database`);
 
     res.json({
       success: true,

@@ -100,6 +100,74 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Update 3: List professionals available for a specific service in customer range
+app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, next) => {
+  try {
+    const { serviceId } = req.params;
+    const customerLat = parseFloat(req.query.lat as string);
+    const customerLng = parseFloat(req.query.lng as string);
+    const femaleOnly = req.query.femaleOnly === 'true';
+    const sortBy = (req.query.sortBy as 'distance' | 'rating' | 'price') || 'distance';
+
+    if (isNaN(customerLat) || isNaN(customerLng)) {
+      res.status(400).json({ success: false, message: 'lat and lng query params are required' });
+      return;
+    }
+
+    const query = `
+      SELECT u.id, u.full_name, u.gender,
+             pp.latitude, pp.longitude, pp.rating_avg,
+             pp.total_jobs_completed, pp.coverage_radius_km,
+             pos.km_charge_per_km, pos.custom_price as service_price
+      FROM pro_offered_services pos
+      JOIN professional_profiles pp ON pp.user_id = pos.pro_id
+      JOIN users u ON u.id = pos.pro_id
+      WHERE pos.service_id = $1
+        AND pos.is_active = true
+        AND pp.is_blacklisted = false
+        ${femaleOnly ? "AND u.gender = 'FEMALE'" : ''}
+    `;
+
+    const prosRes = await pool.query(query, [serviceId]);
+    const pros = prosRes.rows;
+
+    const nearbyPros = pros
+      .map((p) => {
+        const pLat = parseFloat(p.latitude) || customerLat;
+        const pLng = parseFloat(p.longitude) || customerLng;
+        const distKm = calculateDistanceKm(customerLat, customerLng, pLat, pLng);
+        const kmCharge = parseFloat(p.km_charge_per_km) || 15;
+        const basePrice = parseFloat(p.service_price) || 0;
+        const travelCharge = parseFloat((distKm * kmCharge).toFixed(2));
+        const estimatedTotal = parseFloat((basePrice + travelCharge).toFixed(2));
+        return {
+          proId: p.id,
+          name: p.full_name,
+          gender: p.gender,
+          ratingAvg: parseFloat(p.rating_avg) || 5.0,
+          totalJobsCompleted: p.total_jobs_completed || 0,
+          distanceKm: parseFloat(distKm.toFixed(2)),
+          kmCharge,
+          serviceBasePrice: basePrice,
+          travelCharge,
+          estimatedTotal,
+          coverageRadiusKm: parseFloat(p.coverage_radius_km) || 50,
+        };
+      })
+      .filter((p) => p.distanceKm <= p.coverageRadiusKm);
+
+    if (sortBy === 'rating') {
+      nearbyPros.sort((a, b) => b.ratingAvg - a.ratingAvg);
+    } else if (sortBy === 'price') {
+      nearbyPros.sort((a, b) => a.estimatedTotal - b.estimatedTotal);
+    } else {
+      nearbyPros.sort((a, b) => a.distanceKm - b.distanceKm);
+    }
+
+    res.json({ success: true, data: nearbyPros });
+  } catch (err) { next(err); }
+});
+
 app.post('/api/v1/catalog/services', async (req, res, next) => {
   try {
     const { categoryId, name, description, basePrice, durationMinutes } = req.body;

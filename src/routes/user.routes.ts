@@ -29,4 +29,8 @@ router.get('/me/locations', (req, res, next) => userController.getSavedLocations
 router.post('/me/locations', validateRequest(addLocationSchema), (req, res, next) => userController.addSavedLocation(req, res, next));
 router.delete('/me/locations/:id', (req, res, next) => userController.deleteSavedLocation(req, res, next));
 
+// Update 10: Admin Customers management endpoint
+router.get('/admin/customers', (req, res, next) => userController.getAllCustomers(req as any, res, next));
+
 export default router;
+

@@ -171,10 +171,19 @@ export class ProfessionalService {
 
     const updateRes = await pool.query(
       `UPDATE professional_profiles
-       SET is_online = $1, current_location = $2, updated_at = NOW()
-       WHERE user_id = $3
+       SET is_online = $1, current_location = $2,
+           latitude = COALESCE($3, latitude),
+           longitude = COALESCE($4, longitude),
+           updated_at = NOW()
+       WHERE user_id = $5
        RETURNING *`,
-      [data.isOnline, JSON.stringify(locationJson), userId]
+      [
+        data.isOnline,
+        JSON.stringify(locationJson),
+        data.latitude ?? null,
+        data.longitude ?? null,
+        userId,
+      ]
     );
 
     const updated = updateRes.rows[0];
@@ -251,6 +260,74 @@ export class ProfessionalService {
         : `Score ${score}% is below passing requirement of ${module.passing_score}%. Please review and retry.`,
     };
   }
+  // 8. Offered Services Management
+  async saveOfferedServices(userId: string, services: Array<{ serviceId: string; customPrice?: number; kmCharge?: number }>) {
+    await this.getOrCreateProfile(userId);
+    const results = [];
+    for (const item of services) {
+      const customPrice = item.customPrice ?? null;
+      const kmCharge = item.kmCharge ?? 15.00;
+      const res = await pool.query(
+        `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, km_charge_per_km, is_active, updated_at)
+         VALUES ($1, $2, $3, $4, $5, true, NOW())
+         ON CONFLICT (pro_id, service_id) 
+         DO UPDATE SET custom_price = COALESCE($4, pro_offered_services.custom_price),
+                       km_charge_per_km = COALESCE($5, pro_offered_services.km_charge_per_km),
+                       is_active = true,
+                       updated_at = NOW()
+         RETURNING *`,
+        [`pos-${randomUUID().slice(0, 8)}`, userId, item.serviceId, customPrice, kmCharge]
+      );
+      results.push(res.rows[0]);
+    }
+    return results;
+  }
+
+  async getOfferedServices(userId: string) {
+    const res = await pool.query(
+      `SELECT pos.*, s.name as service_name, s.category_id, s.base_price, s.icon
+       FROM pro_offered_services pos
+       JOIN services s ON s.id = pos.service_id
+       WHERE pos.pro_id = $1
+       ORDER BY s.name ASC`,
+      [userId]
+    );
+    return res.rows;
+  }
+
+  async updateServicePrice(userId: string, serviceId: string, customPrice: number, kmCharge?: number) {
+    const res = await pool.query(
+      `UPDATE pro_offered_services
+       SET custom_price = $1, km_charge_per_km = COALESCE($2, km_charge_per_km), updated_at = NOW()
+       WHERE pro_id = $3 AND service_id = $4
+       RETURNING *`,
+      [customPrice, kmCharge ?? null, userId, serviceId]
+    );
+    if (res.rows.length === 0) {
+      throw new AppError('Offered service not found', 404, 'NOT_FOUND');
+    }
+    return res.rows[0];
+  }
+
+  async toggleServiceStatus(userId: string, serviceId: string, isActive: boolean) {
+    const res = await pool.query(
+      `UPDATE pro_offered_services
+       SET is_active = $1, updated_at = NOW()
+       WHERE pro_id = $2 AND service_id = $3
+       RETURNING *`,
+      [isActive, userId, serviceId]
+    );
+    if (res.rows.length === 0) {
+      throw new AppError('Offered service not found', 404, 'NOT_FOUND');
+    }
+    return res.rows[0];
+  }
+
+  async deleteOfferedService(userId: string, serviceId: string) {
+    await pool.query('DELETE FROM pro_offered_services WHERE pro_id = $1 AND service_id = $2', [userId, serviceId]);
+    return { message: 'Service removed from offered list' };
+  }
 }
 
 export const professionalService = new ProfessionalService();
+

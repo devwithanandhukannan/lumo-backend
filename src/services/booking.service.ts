@@ -2,6 +2,19 @@ import { randomUUID } from 'crypto';
 import { pool } from '../db/pgDb';
 import { AppError } from '../middleware/error.middleware';
 
+// Haversine formula: returns distance in km
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export class BookingService {
   // 1. Fetch Categories
   async getCategories() {
@@ -9,8 +22,8 @@ export class BookingService {
     return res.rows;
   }
 
-  // 2. Fetch Services
-  async getServices(categoryId?: string) {
+  // 2. Fetch Services (with optional location-based availability check)
+  async getServices(categoryId?: string, latitude?: number, longitude?: number) {
     let query = 'SELECT s.*, c.name as category_name FROM services s JOIN service_categories c ON s.category_id = c.id WHERE s.is_active = true';
     const params: any[] = [];
 
@@ -21,10 +34,125 @@ export class BookingService {
 
     query += ' ORDER BY s.name ASC';
     const res = await pool.query(query, params);
-    return res.rows;
+    const services = res.rows;
+
+    // If location given, count available pros per service
+    if (latitude !== undefined && longitude !== undefined) {
+      return await Promise.all(
+        services.map(async (svc) => {
+          const count = await this._countAvailablePros(svc.id, latitude, longitude);
+          return { ...svc, available_pros_count: count, is_available: count > 0 };
+        })
+      );
+    }
+
+    return services;
   }
 
-  // 3. Create Booking Request
+  // 3. List Professionals available for a specific service in customer range
+  async getProsForService(
+    serviceId: string,
+    customerLat: number,
+    customerLng: number,
+    femaleOnly: boolean = false,
+    sortBy: 'distance' | 'rating' | 'price' = 'distance'
+  ) {
+    const query = `
+      SELECT u.id, u.full_name, u.gender,
+             pp.latitude, pp.longitude, pp.rating_avg,
+             pp.total_jobs_completed, pp.coverage_radius_km,
+             pos.km_charge_per_km, pos.custom_price as service_price
+      FROM pro_offered_services pos
+      JOIN professional_profiles pp ON pp.user_id = pos.pro_id
+      JOIN users u ON u.id = pos.pro_id
+      WHERE pos.service_id = $1
+        AND pos.is_active = true
+        AND pp.is_online = true
+        AND pp.verification_status = 'APPROVED'
+        AND pp.is_blacklisted = false
+        AND pp.latitude IS NOT NULL
+        AND pp.longitude IS NOT NULL
+        ${femaleOnly ? "AND u.gender = 'FEMALE'" : ''}
+    `;
+
+    const res = await pool.query(query, [serviceId]);
+    const pros = res.rows;
+
+    // Filter by coverage radius and compute distance
+    const nearbyPros = pros
+      .map((p) => {
+        const distKm = haversineKm(customerLat, customerLng, p.latitude, p.longitude);
+        const kmCharge = parseFloat(p.km_charge_per_km) || 15;
+        const basePrice = parseFloat(p.service_price) || 0;
+        const travelCharge = parseFloat((distKm * kmCharge).toFixed(2));
+        const estimatedTotal = parseFloat((basePrice + travelCharge).toFixed(2));
+        return {
+          proId: p.id,
+          name: p.full_name,
+          gender: p.gender,
+          ratingAvg: parseFloat(p.rating_avg) || 5.0,
+          totalJobsCompleted: p.total_jobs_completed || 0,
+          distanceKm: parseFloat(distKm.toFixed(2)),
+          kmCharge,
+          serviceBasePrice: basePrice,
+          travelCharge,
+          estimatedTotal,
+          coverageRadiusKm: parseFloat(p.coverage_radius_km) || 50,
+        };
+      })
+      .filter((p) => p.distanceKm <= p.coverageRadiusKm);
+
+    // Sort
+    if (sortBy === 'rating') {
+      nearbyPros.sort((a, b) => b.ratingAvg - a.ratingAvg);
+    } else if (sortBy === 'price') {
+      nearbyPros.sort((a, b) => a.estimatedTotal - b.estimatedTotal);
+    } else {
+      nearbyPros.sort((a, b) => a.distanceKm - b.distanceKm);
+    }
+
+    return nearbyPros;
+  }
+
+  // 4. Distance + charge estimate (before booking)
+  async getBookingEstimate(
+    serviceId: string,
+    proId: string,
+    customerLat: number,
+    customerLng: number
+  ) {
+    const proRes = await pool.query(
+      'SELECT latitude, longitude FROM professional_profiles WHERE user_id = $1',
+      [proId]
+    );
+    const pro = proRes.rows[0];
+    if (!pro || !pro.latitude) {
+      return { distanceKm: 0, travelCharge: 0, basePrice: 0, total: 0, kmCharge: 15 };
+    }
+
+    const posRes = await pool.query(
+      'SELECT custom_price, km_charge_per_km FROM pro_offered_services WHERE pro_id = $1 AND service_id = $2',
+      [proId, serviceId]
+    );
+    const pos = posRes.rows[0];
+    const svcRes = await pool.query('SELECT base_price FROM services WHERE id = $1', [serviceId]);
+    const svc = svcRes.rows[0];
+
+    const basePrice = parseFloat(pos?.custom_price || svc?.base_price || '0');
+    const kmCharge = parseFloat(pos?.km_charge_per_km || '15');
+    const distanceKm = parseFloat(haversineKm(customerLat, customerLng, pro.latitude, pro.longitude).toFixed(2));
+    const travelCharge = parseFloat((distanceKm * kmCharge).toFixed(2));
+
+    return {
+      distanceKm,
+      kmCharge,
+      basePrice,
+      travelCharge,
+      total: parseFloat((basePrice + travelCharge).toFixed(2)),
+    };
+  }
+
+  // 5. Create Booking Request
   async createBooking(
     customerId: string,
     serviceId: string,
@@ -32,42 +160,95 @@ export class BookingService {
     addressText: string,
     latitude: number,
     longitude: number,
-    femaleProPreferred: boolean = false
+    femaleProPreferred: boolean = false,
+    selectedProId?: string
   ) {
     const serviceRes = await pool.query('SELECT * FROM services WHERE id = $1 AND is_active = true', [serviceId]);
     const service = serviceRes.rows[0];
-
     if (!service) {
       throw new AppError('Service not found or inactive', 404, 'SERVICE_NOT_FOUND');
     }
 
+    // Update 6: Gate booking on pro availability
+    const availableCount = await this._countAvailablePros(serviceId, latitude, longitude, femaleProPreferred ? 'FEMALE' : undefined);
+    if (availableCount === 0) {
+      throw new AppError(
+        'No approved professionals are currently available in your area for this service. Please try a different location or check back later.',
+        404,
+        'NO_PROS_AVAILABLE'
+      );
+    }
+
+    // Validate the selected pro if provided
+    if (selectedProId) {
+      const proCheckRes = await pool.query(
+        `SELECT pp.latitude, pp.longitude, pp.coverage_radius_km, pp.is_online, pp.verification_status, pp.is_blacklisted
+         FROM professional_profiles pp WHERE pp.user_id = $1`,
+        [selectedProId]
+      );
+      const pro = proCheckRes.rows[0];
+      if (!pro || !pro.is_online || pro.verification_status !== 'APPROVED' || pro.is_blacklisted) {
+        throw new AppError('The selected professional is not available at this time.', 400, 'PRO_NOT_AVAILABLE');
+      }
+      if (pro.latitude) {
+        const dist = haversineKm(latitude, longitude, pro.latitude, pro.longitude);
+        if (dist > parseFloat(pro.coverage_radius_km)) {
+          throw new AppError('The selected professional is outside your service area.', 400, 'PRO_OUT_OF_RANGE');
+        }
+      }
+    }
+
+    // Update 1: Calculate distance and travel charge
+    let distanceKm = 0;
+    let travelCharge = 0;
+    let kmCharge = 15;
+
+    const proToUse = selectedProId || await this._findNearestPro(serviceId, latitude, longitude);
+    if (proToUse) {
+      const proLocRes = await pool.query(
+        'SELECT latitude, longitude FROM professional_profiles WHERE user_id = $1',
+        [proToUse]
+      );
+      const proLoc = proLocRes.rows[0];
+      if (proLoc?.latitude) {
+        const posRes = await pool.query(
+          'SELECT km_charge_per_km FROM pro_offered_services WHERE pro_id = $1 AND service_id = $2',
+          [proToUse, serviceId]
+        );
+        kmCharge = parseFloat(posRes.rows[0]?.km_charge_per_km || '15');
+        distanceKm = parseFloat(haversineKm(latitude, longitude, proLoc.latitude, proLoc.longitude).toFixed(2));
+        travelCharge = parseFloat((distanceKm * kmCharge).toFixed(2));
+      }
+    }
+
+    // Update 5: Get customer sex for booking record
+    const custRes = await pool.query('SELECT sex FROM users WHERE id = $1', [customerId]);
+    const customerSex = custRes.rows[0]?.sex || null;
+
+    const basePrice = parseFloat(service.base_price);
+    const totalAmount = parseFloat((basePrice + travelCharge).toFixed(2));
+
     const bookingId = `bk-${randomUUID().slice(0, 8)}`;
     const startOtp = Math.floor(1000 + Math.random() * 9000).toString();
     const endOtp = Math.floor(1000 + Math.random() * 9000).toString();
-    const totalAmount = parseFloat(service.base_price);
 
     const insertQuery = `
       INSERT INTO bookings (
-        id, customer_id, service_id, status, scheduled_at, 
-        address_text, latitude, longitude, female_pro_preferred, 
-        start_otp, end_otp, total_amount
+        id, customer_id, service_id, status, scheduled_at,
+        address_text, latitude, longitude, female_pro_preferred,
+        start_otp, end_otp, total_amount, distance_km, travel_charge,
+        customer_sex, selected_pro_id
       )
-      VALUES ($1, $2, $3, 'REQUESTED', $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, 'REQUESTED', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING *
     `;
 
     const res = await pool.query(insertQuery, [
-      bookingId,
-      customerId,
-      serviceId,
+      bookingId, customerId, serviceId,
       scheduledAt || new Date().toISOString(),
-      addressText,
-      latitude,
-      longitude,
-      femaleProPreferred,
-      startOtp,
-      endOtp,
-      totalAmount,
+      addressText, latitude, longitude, femaleProPreferred,
+      startOtp, endOtp, totalAmount, distanceKm, travelCharge,
+      customerSex, selectedProId || null,
     ]);
 
     await pool.query(
@@ -75,10 +256,18 @@ export class BookingService {
       [`log-${randomUUID().slice(0, 8)}`, bookingId, 'REQUESTED', 'Booking request created by customer']
     );
 
-    return res.rows[0];
+    const booking = res.rows[0];
+    return {
+      ...booking,
+      base_price: basePrice,
+      distance_km: distanceKm,
+      travel_charge: travelCharge,
+      km_charge: kmCharge,
+      total_amount: totalAmount,
+    };
   }
 
-  // 4. Accept Booking (Provider)
+  // 6. Accept Booking (Provider)
   async acceptBooking(proUserId: string, bookingId: string) {
     const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
     const booking = bookingRes.rows[0];
@@ -92,10 +281,7 @@ export class BookingService {
     }
 
     const updateRes = await pool.query(
-      `UPDATE bookings 
-       SET pro_id = $1, status = 'ACCEPTED', updated_at = NOW() 
-       WHERE id = $2 
-       RETURNING *`,
+      `UPDATE bookings SET pro_id = $1, status = 'ACCEPTED', updated_at = NOW() WHERE id = $2 RETURNING *`,
       [proUserId, bookingId]
     );
 
@@ -107,7 +293,7 @@ export class BookingService {
     return updateRes.rows[0];
   }
 
-  // 5. Update Booking Status (Provider State Machine)
+  // 7. Update Booking Status (Provider State Machine)
   async updateStatus(
     proUserId: string,
     bookingId: string,
@@ -117,15 +303,9 @@ export class BookingService {
     const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
     const booking = bookingRes.rows[0];
 
-    if (!booking) {
-      throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
-    }
+    if (!booking) throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
+    if (booking.pro_id !== proUserId) throw new AppError('You are not assigned to this booking', 403, 'FORBIDDEN');
 
-    if (booking.pro_id !== proUserId) {
-      throw new AppError('You are not assigned to this booking', 403, 'FORBIDDEN');
-    }
-
-    // Verify OTP for IN_PROGRESS and COMPLETED transitions
     if (nextStatus === 'IN_PROGRESS') {
       if (!otpProvided || otpProvided !== booking.start_otp) {
         throw new AppError('Invalid Start Job OTP provided by customer', 400, 'INVALID_OTP');
@@ -134,8 +314,6 @@ export class BookingService {
       if (!otpProvided || otpProvided !== booking.end_otp) {
         throw new AppError('Invalid Finish Job OTP provided by customer', 400, 'INVALID_OTP');
       }
-
-      // Increment completed jobs count for provider
       await pool.query(
         'UPDATE professional_profiles SET total_jobs_completed = total_jobs_completed + 1 WHERE user_id = $1',
         [proUserId]
@@ -155,19 +333,76 @@ export class BookingService {
     return updateRes.rows[0];
   }
 
-  // 6. Get User Bookings
+  // 8. Get User Bookings (with customer sex for pro view)
   async getUserBookings(userId: string, role: string) {
     const column = role === 'PROFESSIONAL' ? 'pro_id' : 'customer_id';
     const query = `
-      SELECT b.*, s.name as service_name, u.full_name as counterparty_name, u.phone_number as counterparty_phone
+      SELECT b.*, s.name as service_name,
+             u.full_name as counterparty_name,
+             u.phone_number as counterparty_phone,
+             cust.sex as customer_sex
       FROM bookings b
       JOIN services s ON b.service_id = s.id
       LEFT JOIN users u ON u.id = (CASE WHEN $2 = 'PROFESSIONAL' THEN b.customer_id ELSE b.pro_id END)
+      LEFT JOIN users cust ON cust.id = b.customer_id
       WHERE b.${column} = $1
       ORDER BY b.created_at DESC
     `;
     const res = await pool.query(query, [userId, role]);
     return res.rows;
+  }
+
+  // ─── PRIVATE HELPERS ──────────────────────────────────────────────────────
+
+  private async _countAvailablePros(
+    serviceId: string,
+    customerLat: number,
+    customerLng: number,
+    genderFilter?: string
+  ): Promise<number> {
+    const query = `
+      SELECT pp.latitude, pp.longitude, pp.coverage_radius_km
+      FROM pro_offered_services pos
+      JOIN professional_profiles pp ON pp.user_id = pos.pro_id
+      JOIN users u ON u.id = pos.pro_id
+      WHERE pos.service_id = $1
+        AND pos.is_active = true
+        AND pp.is_online = true
+        AND pp.verification_status = 'APPROVED'
+        AND pp.is_blacklisted = false
+        AND pp.latitude IS NOT NULL
+        ${genderFilter ? "AND u.gender = '" + genderFilter + "'" : ''}
+    `;
+    const res = await pool.query(query, [serviceId]);
+    let count = 0;
+    for (const p of res.rows) {
+      const dist = haversineKm(customerLat, customerLng, p.latitude, p.longitude);
+      if (dist <= parseFloat(p.coverage_radius_km || '50')) count++;
+    }
+    return count;
+  }
+
+  private async _findNearestPro(serviceId: string, lat: number, lng: number): Promise<string | null> {
+    const query = `
+      SELECT pp.user_id, pp.latitude, pp.longitude
+      FROM pro_offered_services pos
+      JOIN professional_profiles pp ON pp.user_id = pos.pro_id
+      WHERE pos.service_id = $1
+        AND pos.is_active = true
+        AND pp.is_online = true
+        AND pp.verification_status = 'APPROVED'
+        AND pp.is_blacklisted = false
+        AND pp.latitude IS NOT NULL
+    `;
+    const res = await pool.query(query, [serviceId]);
+    if (res.rows.length === 0) return null;
+    let nearest: string | null = null;
+    let minDist = Infinity;
+    for (const p of res.rows) {
+      const dist = haversineKm(lat, lng, p.latitude, p.longitude);
+      if (dist < minDist) { minDist = dist; nearest = p.user_id; }
+    }
+    return nearest;
   }
 }
 

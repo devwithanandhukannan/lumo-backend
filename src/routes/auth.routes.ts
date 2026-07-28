@@ -66,4 +66,7 @@ router.post('/logout', authenticateToken, (req, res, next) => authController.log
 router.post('/pro/register-phone', validateRequest(registerProPhoneSchema), (req, res, next) => authController.registerProWithPhone(req, res, next));
 router.post('/customer/complete-profile', authenticateToken, validateRequest(completeCustomerProfileSchema), (req, res, next) => authController.completeCustomerProfile(req as any, res, next));
 
+// Update 2: Smart phone existence check (public, no auth needed)
+router.get('/check-phone', (req, res, next) => authController.checkPhone(req, res, next));
+
 export default router;

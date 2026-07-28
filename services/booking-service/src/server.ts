@@ -40,7 +40,8 @@ function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: num
 app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const customerId = req.user!.userId;
-    const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, targetProId } = req.body;
+    const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, targetProId, selectedProId } = req.body;
+    const chosenProId = selectedProId || targetProId;
 
     // Ensure self-healing column migration
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;').catch(() => {});
@@ -51,17 +52,17 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
 
     // Matching Matrix: Query candidate professionals who offer this service, are APPROVED/PENDING, and NOT BUSY
     const candidateQuery = `
-      SELECT u.id as user_id, u.full_name, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.custom_price, pos.per_km_rate
+      SELECT u.id as user_id, u.full_name, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.custom_price, pos.km_charge_per_km as per_km_rate
       FROM users u
       JOIN professional_profiles p ON u.id = p.user_id
       LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1)
       WHERE u.role = 'PROFESSIONAL'
         AND p.verification_status IN ('APPROVED', 'PENDING')
         AND p.is_busy = false
-        ${targetProId ? "AND u.id = $2" : ''}
+        ${chosenProId ? "AND u.id = $2" : ''}
     `;
 
-    const queryArgs = targetProId ? [serviceId, targetProId] : [serviceId];
+    const queryArgs = chosenProId ? [serviceId, chosenProId] : [serviceId];
     const candidatesRes = await pool.query(candidateQuery, queryArgs);
     let candidates = candidatesRes.rows;
 
@@ -146,6 +147,44 @@ app.get('/api/v1/bookings/admin/all', authenticateToken, requireRoles(['SUPER_AD
   } catch (err) { next(err); }
 });
 
+// Pre-booking charge estimate endpoint
+app.get('/api/v1/bookings/estimate', async (req, res, next) => {
+  try {
+    const serviceId = req.query.serviceId as string;
+    const proId = req.query.proId as string;
+    const lat = parseFloat(req.query.lat as string);
+    const lng = parseFloat(req.query.lng as string);
+
+    if (!serviceId || !proId || isNaN(lat) || isNaN(lng)) {
+      res.status(400).json({ success: false, message: 'serviceId, proId, lat, lng required' });
+      return;
+    }
+
+    const proRes = await pool.query('SELECT latitude, longitude FROM professional_profiles WHERE user_id = $1', [proId]);
+    const pro = proRes.rows[0];
+    const posRes = await pool.query('SELECT custom_price, km_charge_per_km FROM pro_offered_services WHERE pro_id = $1 AND service_id = $2', [proId, serviceId]);
+    const pos = posRes.rows[0];
+    const svcRes = await pool.query('SELECT base_price FROM services WHERE id = $1', [serviceId]);
+    const svc = svcRes.rows[0];
+
+    const basePrice = parseFloat(pos?.custom_price || svc?.base_price || '0');
+    const kmCharge = parseFloat(pos?.km_charge_per_km || '15');
+    const distanceKm = pro?.latitude ? parseFloat(calculateDistanceKm(lat, lng, parseFloat(pro.latitude), parseFloat(pro.longitude)).toFixed(2)) : 0;
+    const travelCharge = parseFloat((distanceKm * kmCharge).toFixed(2));
+
+    res.json({
+      success: true,
+      data: {
+        distanceKm,
+        kmCharge,
+        basePrice,
+        travelCharge,
+        total: parseFloat((basePrice + travelCharge).toFixed(2)),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 // 2. Fetch My Bookings (Customer or Professional)
 app.get('/api/v1/bookings/my-bookings', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -154,7 +193,7 @@ app.get('/api/v1/bookings/my-bookings', authenticateToken, async (req: Authentic
     const column = role === 'PROFESSIONAL' ? 'pro_id' : 'customer_id';
 
     const bookings = await pool.query(
-      `SELECT b.*, s.name as service_name, u.full_name as customer_name, u.phone_number as customer_phone,
+      `SELECT b.*, s.name as service_name, u.full_name as customer_name, u.phone_number as customer_phone, u.gender as customer_sex,
               pu.full_name as pro_name, pu.avatar_url as pro_avatar, pp.rating_avg as pro_rating, pp.verification_status as pro_verification
        FROM bookings b
        LEFT JOIN services s ON b.service_id = s.id

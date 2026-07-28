@@ -122,6 +122,21 @@ export const initDatabaseTables = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
       ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS coverage_radius_km NUMERIC(5,2) DEFAULT 50.00;
       ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS assigned_region VARCHAR(100) DEFAULT 'Bangalore';
+
+      -- Update 8: Proper lat/lng columns on professional_profiles for proximity queries
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
+      ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS service_area VARCHAR(200);
+
+      -- Update 1: Per-professional per-service km charge
+      ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS km_charge_per_km NUMERIC(8,2) DEFAULT 15.00;
+      ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+      -- Update 1/5/6: Booking columns for distance, charge breakdown, customer sex, chosen pro
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS distance_km NUMERIC(6,2);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS travel_charge NUMERIC(10,2) DEFAULT 0;
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_sex VARCHAR(20);
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS selected_pro_id VARCHAR(50);
     `);
 
     console.log('✅ PostgreSQL database schema ready!');

@@ -155,6 +155,31 @@ export class UserService {
 
     return { message: 'Location deleted successfully' };
   }
+  // Update 10: Admin Panel - Get All Customers with metrics
+  async getAllCustomers() {
+    const res = await pool.query(
+      `SELECT u.id, u.phone_number, u.email, u.full_name, u.gender, u.is_active, u.created_at,
+              COUNT(b.id) as total_bookings,
+              COALESCE(SUM(CASE WHEN b.status = 'COMPLETED' THEN b.total_amount ELSE 0 END), 0) as total_spent
+       FROM users u
+       LEFT JOIN bookings b ON b.customer_id = u.id
+       WHERE u.role = 'CUSTOMER'
+       GROUP BY u.id
+       ORDER BY u.created_at DESC`
+    );
+    return res.rows.map((u) => ({
+      id: u.id,
+      phoneNumber: u.phone_number,
+      email: u.email,
+      fullName: u.full_name,
+      gender: u.gender,
+      isActive: u.is_active,
+      createdAt: u.created_at,
+      totalBookings: parseInt(u.total_bookings, 10) || 0,
+      totalSpent: parseFloat(u.total_spent) || 0,
+    }));
+  }
 }
 
 export const userService = new UserService();
+

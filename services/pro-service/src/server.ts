@@ -32,6 +32,8 @@ app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Pro Service'
 // 1. Fetch Account Health & Rating Metrics
 app.get('/api/v1/pro/health', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
+    const userRes = await pool.query('SELECT latitude, longitude, service_area FROM users WHERE id = $1', [req.user!.userId]);
+    const user = userRes.rows[0];
     const proRes = await pool.query('SELECT * FROM professional_profiles WHERE user_id = $1', [req.user!.userId]);
     const pro = proRes.rows[0];
     if (!pro) throw new AppError('Professional profile not found', 404);
@@ -46,8 +48,10 @@ app.get('/api/v1/pro/health', authenticateToken, async (req: AuthenticatedReques
         cancellationRate: parseFloat(pro.cancellation_rate),
         verificationStatus: pro.verification_status,
         coverageRadiusKm: parseFloat(pro.coverage_radius_km || '50.00'),
-        assignedRegion: pro.assigned_region || pro.service_area || 'Kochi, Kerala',
-        serviceArea: pro.service_area || 'Kochi, Kerala',
+        assignedRegion: pro.assigned_region || pro.service_area || user?.service_area || 'Kochi, Kerala',
+        serviceArea: pro.service_area || user?.service_area || 'Kochi, Kerala',
+        latitude: parseFloat(pro.latitude || user?.latitude || '9.9312'),
+        longitude: parseFloat(pro.longitude || user?.longitude || '76.2673'),
         isOnline: pro.is_online,
       },
     });
@@ -244,11 +248,18 @@ app.post('/api/v1/pro/offered-services', authenticateToken, async (req: Authenti
 
     for (const item of services) {
       if (!item.serviceId) continue;
+      const customPrice = item.customPrice ? parseFloat(item.customPrice) : null;
+      const kmCharge = item.kmCharge ? parseFloat(item.kmCharge) : 15.00;
       await pool.query(
-        `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, is_active)
-         VALUES ($1, $2, $3, $4, true)
-         ON CONFLICT (pro_id, service_id) DO UPDATE SET custom_price = EXCLUDED.custom_price, is_active = true, updated_at = NOW()`,
-        [`pos-${randomUUID().slice(0, 8)}`, proId, item.serviceId, item.customPrice ? parseFloat(item.customPrice) : null]
+        `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, km_charge_per_km, per_km_rate, is_active)
+         VALUES ($1, $2, $3, $4, $5, $5, true)
+         ON CONFLICT (pro_id, service_id)
+         DO UPDATE SET custom_price = EXCLUDED.custom_price,
+                       km_charge_per_km = EXCLUDED.km_charge_per_km,
+                       per_km_rate = EXCLUDED.per_km_rate,
+                       is_active = true,
+                       updated_at = NOW()`,
+        [`pos-${randomUUID().slice(0, 8)}`, proId, item.serviceId, customPrice, kmCharge]
       );
     }
 

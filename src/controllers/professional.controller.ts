@@ -83,6 +83,61 @@ export class ProfessionalController {
       next(err);
     }
   }
+
+  async saveOfferedServices(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const { services } = req.body;
+      const result = await professionalService.saveOfferedServices(userId, services);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async getOfferedServices(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const result = await professionalService.getOfferedServices(userId);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async updateServicePrice(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const { serviceId, customPrice, kmCharge } = req.body;
+      const result = await professionalService.updateServicePrice(userId, serviceId, customPrice, kmCharge);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async toggleServiceStatus(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const { serviceId, isActive } = req.body;
+      const result = await professionalService.toggleServiceStatus(userId, serviceId, isActive);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async deleteOfferedService(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const { serviceId } = req.body;
+      const result = await professionalService.deleteOfferedService(userId, serviceId);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 
 export const professionalController = new ProfessionalController();
+

@@ -15,8 +15,47 @@ export class BookingController {
   async getServices(req: Request, res: Response, next: NextFunction) {
     try {
       const categoryId = req.query.categoryId as string | undefined;
-      const services = await bookingService.getServices(categoryId);
+      const latitude = req.query.latitude ? parseFloat(req.query.latitude as string) : undefined;
+      const longitude = req.query.longitude ? parseFloat(req.query.longitude as string) : undefined;
+      const services = await bookingService.getServices(categoryId, latitude, longitude);
       res.status(200).json({ success: true, data: services });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Update 3: List available professionals for a service
+  async getProsForService(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { serviceId } = req.params;
+      const lat = parseFloat(req.query.lat as string);
+      const lng = parseFloat(req.query.lng as string);
+      const femaleOnly = req.query.femaleOnly === 'true';
+      const sortBy = (req.query.sortBy as 'distance' | 'rating' | 'price') || 'distance';
+      if (isNaN(lat) || isNaN(lng)) {
+        res.status(400).json({ success: false, message: 'lat and lng query params are required' });
+        return;
+      }
+      const pros = await bookingService.getProsForService(serviceId, lat, lng, femaleOnly, sortBy);
+      res.status(200).json({ success: true, data: pros });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Update 1: Pre-booking charge estimate
+  async getBookingEstimate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const serviceId = req.query.serviceId as string;
+      const proId = req.query.proId as string;
+      const lat = parseFloat(req.query.lat as string);
+      const lng = parseFloat(req.query.lng as string);
+      if (!serviceId || !proId || isNaN(lat) || isNaN(lng)) {
+        res.status(400).json({ success: false, message: 'serviceId, proId, lat, lng are required' });
+        return;
+      }
+      const estimate = await bookingService.getBookingEstimate(serviceId, proId, lat, lng);
+      res.status(200).json({ success: true, data: estimate });
     } catch (err) {
       next(err);
     }
@@ -25,7 +64,7 @@ export class BookingController {
   async createBooking(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const customerId = req.user!.userId;
-      const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred } = req.body;
+      const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, selectedProId } = req.body;
 
       const booking = await bookingService.createBooking(
         customerId,
@@ -34,7 +73,8 @@ export class BookingController {
         addressText,
         parseFloat(latitude),
         parseFloat(longitude),
-        Boolean(femaleProPreferred)
+        Boolean(femaleProPreferred),
+        selectedProId
       );
 
       res.status(201).json({ success: true, data: booking });

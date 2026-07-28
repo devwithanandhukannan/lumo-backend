@@ -56,6 +56,9 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS travel_charge NUMERIC(10,2) DEFAULT 0.00;
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS base_amount NUMERIC(10,2) DEFAULT 0.00;
 
+        ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS km_charge_per_km NUMERIC(8,2) DEFAULT 15.00;
+        ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS per_km_rate NUMERIC(8,2) DEFAULT 15.00;
+
         CREATE TABLE IF NOT EXISTS reviews (
             id VARCHAR(50) PRIMARY KEY,
             booking_id VARCHAR(50) NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,

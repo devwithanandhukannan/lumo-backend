@@ -39,6 +39,34 @@ app.post('/api/v1/users/locations', authenticateToken, async (req: Authenticated
   } catch (err) { next(err); }
 });
 
+// Update 10: Admin Customers vault endpoint
+app.get('/api/v1/users/admin/customers', async (req, res, next) => {
+  try {
+    const customersRes = await pool.query(
+      `SELECT u.id, u.phone_number, u.email, u.full_name, u.gender, u.is_active, u.created_at,
+              COUNT(b.id) as total_bookings,
+              COALESCE(SUM(CASE WHEN b.status = 'COMPLETED' THEN b.total_amount ELSE 0 END), 0) as total_spent
+       FROM users u
+       LEFT JOIN bookings b ON b.customer_id = u.id
+       WHERE u.role = 'CUSTOMER'
+       GROUP BY u.id
+       ORDER BY u.created_at DESC`
+    );
+    const data = customersRes.rows.map((u) => ({
+      id: u.id,
+      phoneNumber: u.phone_number,
+      email: u.email,
+      fullName: u.full_name || 'Customer',
+      gender: u.gender || 'OTHER',
+      isActive: u.is_active,
+      createdAt: u.created_at,
+      totalBookings: parseInt(u.total_bookings, 10) || 0,
+      totalSpent: parseFloat(u.total_spent) || 0,
+    }));
+    res.json({ success: true, data });
+  } catch (err) { next(err); }
+});
+
 app.use(errorHandler);
 
 const server = app.listen(PORT, () => console.log(`👤 User Service running on port ${PORT}`));

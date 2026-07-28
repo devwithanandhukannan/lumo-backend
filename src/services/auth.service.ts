@@ -6,6 +6,17 @@ import { config } from '../config';
 import { AppError } from '../middleware/error.middleware';
 
 export class AuthService {
+  // 0. Update 2: Smart pre-flight phone check (no OTP needed)
+  async checkPhoneExists(phoneNumber: string): Promise<{ exists: boolean; role: string | null }> {
+    if (!phoneNumber) return { exists: false, role: null };
+    const res = await pool.query(
+      'SELECT role FROM users WHERE phone_number = $1 AND is_active = true',
+      [phoneNumber]
+    );
+    if (res.rows.length === 0) return { exists: false, role: null };
+    return { exists: true, role: res.rows[0].role };
+  }
+
   // 1. Send OTP
   async sendOTP(phoneNumber: string) {
     if (!phoneNumber || !phoneNumber.startsWith('+')) {
@@ -105,6 +116,7 @@ export class AuthService {
     );
 
     return {
+      isRegistered: !!userRes.rows[0], // true if user already existed before OTP verify
       user: {
         id: user.id,
         phoneNumber: user.phone_number,
@@ -350,11 +362,14 @@ export class AuthService {
     age: number,
     email: string,
     gender: string,
-    serviceArea: string
+    serviceArea: string,
+    latitude?: number,
+    longitude?: number
   ) {
     // Upsert user with PROFESSIONAL role
-    const userRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
-    let user = userRes.rows[0];
+    const existingRes = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    const alreadyRegistered = existingRes.rows.length > 0;
+    let user = existingRes.rows[0];
 
     if (!user) {
       const userId = `usr-${randomUUID().slice(0, 8)}`;
@@ -375,7 +390,7 @@ export class AuthService {
       user = updateRes.rows[0];
     }
 
-    // Create or update professional profile
+    // Create or update professional profile — Update 8: save lat/lng
     const proRes = await pool.query('SELECT id FROM professional_profiles WHERE user_id = $1', [user.id]);
     if (!proRes.rows[0]) {
       const proProfId = `pro-prof-${randomUUID().slice(0, 8)}`;
@@ -383,14 +398,16 @@ export class AuthService {
         `INSERT INTO professional_profiles
          (id, user_id, verification_status, documents, face_verified, is_online, is_busy,
           rating_avg, total_jobs_completed, acceptance_rate, cancellation_rate, account_health_score,
-          is_blacklisted, service_area, coverage_radius_km)
-         VALUES ($1, $2, 'PENDING', '{}'::jsonb, false, false, false, 5.0, 0, 100.0, 0.0, 100.0, false, $3, 50.0)`,
-        [proProfId, user.id, serviceArea || 'Bangalore']
+          is_blacklisted, service_area, coverage_radius_km, latitude, longitude)
+         VALUES ($1, $2, 'PENDING', '{}'::jsonb, false, false, false, 5.0, 0, 100.0, 0.0, 100.0, false, $3, 50.0, $4, $5)`,
+        [proProfId, user.id, serviceArea || 'Bangalore', latitude ?? null, longitude ?? null]
       );
     } else {
       await pool.query(
-        `UPDATE professional_profiles SET service_area = $1, updated_at = NOW() WHERE user_id = $2`,
-        [serviceArea || 'Bangalore', user.id]
+        `UPDATE professional_profiles
+         SET service_area = $1, latitude = COALESCE($2, latitude), longitude = COALESCE($3, longitude), updated_at = NOW()
+         WHERE user_id = $4`,
+        [serviceArea || 'Bangalore', latitude ?? null, longitude ?? null, user.id]
       );
     }
 
@@ -406,6 +423,7 @@ export class AuthService {
     );
 
     return {
+      isRegistered: alreadyRegistered,
       user: {
         id: user.id,
         phoneNumber: user.phone_number,

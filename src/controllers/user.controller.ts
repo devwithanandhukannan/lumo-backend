@@ -61,6 +61,16 @@ export class UserController {
       next(err);
     }
   }
+
+  async getAllCustomers(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const customers = await userService.getAllCustomers();
+      res.status(200).json({ success: true, data: customers });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 
 export const userController = new UserController();
+

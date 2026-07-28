@@ -50,4 +50,12 @@ router.post('/training/modules/:id/complete', validateRequest(submitQuizSchema),
   professionalController.submitTrainingQuiz(req, res, next)
 );
 
+// Offered Services Management
+router.post('/offered-services', (req, res, next) => professionalController.saveOfferedServices(req as any, res, next));
+router.get('/offered-services', (req, res, next) => professionalController.getOfferedServices(req as any, res, next));
+router.post('/offered-services/update-price', (req, res, next) => professionalController.updateServicePrice(req as any, res, next));
+router.post('/offered-services/toggle', (req, res, next) => professionalController.toggleServiceStatus(req as any, res, next));
+router.post('/offered-services/delete', (req, res, next) => professionalController.deleteOfferedService(req as any, res, next));
+
 export default router;
+

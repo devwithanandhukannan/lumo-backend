@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 import { Pool } from 'pg';
 import argon2 from 'argon2';
 import { randomUUID } from 'crypto';
-import { AppError, errorHandler, generateAccessToken, generateRefreshToken } from '@lumo/common';
+import { AppError, errorHandler, generateAccessToken, generateRefreshToken, authenticateToken, AuthenticatedRequest } from '@lumo/common';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 
@@ -85,6 +85,23 @@ app.get('/health', async (_req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ status: 'DOWN', database: 'DISCONNECTED' });
   }
+});
+
+// Update 2: Smart pre-flight phone existence check
+app.get('/api/v1/auth/check-phone', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const phone = req.query.phone as string;
+    if (!phone) {
+      res.status(400).json({ success: false, message: 'phone query param is required' });
+      return;
+    }
+    const userRes = await pool.query('SELECT role FROM users WHERE phone_number = $1 AND is_active = true', [phone]);
+    if (userRes.rows.length === 0) {
+      res.json({ success: true, data: { exists: false, role: null } });
+    } else {
+      res.json({ success: true, data: { exists: true, role: userRes.rows[0].role } });
+    }
+  } catch (err) { next(err); }
 });
 
 // 4. Send OTP Request
@@ -505,6 +522,23 @@ app.post('/api/v1/auth/pro/register', async (req: Request, res: Response, next: 
 });
 
 // 6b. Professional Register via Phone Onboarding (Updates Profile, Email, Age & Location)
+async function geocodeAddressText(addressText: string): Promise<{ lat: number; lng: number } | null> {
+  if (!addressText || !addressText.trim()) return null;
+  try {
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY || 'AIzaSyD9r59vIxUjLj3hiICvy9CYbXYbmil0Xb4';
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addressText.trim())}&key=${apiKey}`;
+    const res = await fetch(url);
+    const data = (await res.json()) as any;
+    if (data.status === 'OK' && data.results && data.results.length > 0) {
+      const loc = data.results[0].geometry.location;
+      return { lat: parseFloat(loc.lat), lng: parseFloat(loc.lng) };
+    }
+  } catch (e) {
+    console.warn('Geocoding helper warning:', e);
+  }
+  return null;
+}
+
 const handleProRegisterPhone = async (req: Request, res: Response, next: NextFunction) => {
   const client = await pool.connect();
   try {
@@ -512,8 +546,16 @@ const handleProRegisterPhone = async (req: Request, res: Response, next: NextFun
     if (!phoneNumber || !fullName) throw new AppError('Phone number and full name required', 400);
 
     const targetLocation = serviceArea || location || null;
-    const lat = latitude ? parseFloat(latitude) : null;
-    const lng = longitude ? parseFloat(longitude) : null;
+    let lat = latitude !== undefined && latitude !== null ? parseFloat(latitude) : null;
+    let lng = longitude !== undefined && longitude !== null ? parseFloat(longitude) : null;
+
+    if ((lat === null || lng === null) && targetLocation) {
+      const geo = await geocodeAddressText(targetLocation);
+      if (geo) {
+        lat = geo.lat;
+        lng = geo.lng;
+      }
+    }
 
     let userRes = await client.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
     let user = userRes.rows[0];
@@ -621,6 +663,41 @@ app.post('/api/v1/auth/firebase-login', async (req: Request, res: Response, next
         user,
         tokens: { accessToken: generateAccessToken(payload), refreshToken: generateRefreshToken(payload) }
       }
+    });
+  } catch (err) { next(err); }
+});
+
+// 8. Complete Customer Profile
+app.post('/api/v1/auth/customer/complete-profile', authenticateToken, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { fullName, name, age, sex, gender, email } = req.body;
+    const userId = req.user!.userId;
+    const finalName = fullName || name;
+    if (!finalName) throw new AppError('Full name is required', 400);
+
+    const userGender = sex || gender || 'OTHER';
+
+    const updateRes = await pool.query(
+      `UPDATE users
+       SET full_name = $1,
+           age = COALESCE($2, age),
+           gender = $3,
+           sex = $3,
+           email = COALESCE($4, email),
+           role = 'CUSTOMER',
+           updated_at = NOW()
+       WHERE id = $5 RETURNING *`,
+      [finalName, age ? parseInt(age, 10) : null, userGender, email || null, userId]
+    );
+
+    if (updateRes.rowCount === 0) throw new AppError('Customer user account not found', 404);
+
+    console.log(`👤 [CUSTOMER-PROFILE-COMPLETED] Saved customer ${finalName} (${userId}) into PostgreSQL database`);
+
+    res.json({
+      success: true,
+      message: 'Customer profile completed successfully',
+      data: updateRes.rows[0],
     });
   } catch (err) { next(err); }
 });

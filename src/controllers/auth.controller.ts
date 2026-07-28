@@ -88,11 +88,28 @@ export class AuthController {
   // NEW: Register professional with phone OTP
   async registerProWithPhone(req: Request, res: Response, next: NextFunction) {
     try {
-      const { phoneNumber, fullName, age, email, gender, serviceArea } = req.body;
+      const { phoneNumber, fullName, age, email, gender, serviceArea, latitude, longitude } = req.body;
       const result = await authService.registerProWithPhone(
-        phoneNumber, fullName, parseInt(age), email, gender, serviceArea
+        phoneNumber, fullName, parseInt(age), email, gender, serviceArea,
+        latitude ? parseFloat(latitude) : undefined,
+        longitude ? parseFloat(longitude) : undefined
       );
       res.status(201).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Update 2: Check if phone is already registered
+  async checkPhone(req: Request, res: Response, next: NextFunction) {
+    try {
+      const phone = req.query.phone as string;
+      if (!phone) {
+        res.status(400).json({ success: false, message: 'phone query param is required' });
+        return;
+      }
+      const result = await authService.checkPhoneExists(phone);
+      res.status(200).json({ success: true, data: result });
     } catch (err) {
       next(err);
     }

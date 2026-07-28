@@ -13,6 +13,7 @@ const createBookingSchema = z.object({
   latitude: z.number(),
   longitude: z.number(),
   femaleProPreferred: z.boolean().optional(),
+  selectedProId: z.string().optional(),
 });
 
 const updateStatusSchema = z.object({
@@ -23,6 +24,8 @@ const updateStatusSchema = z.object({
 // Public catalog routes
 router.get('/catalog/categories', (req, res, next) => bookingController.getCategories(req, res, next));
 router.get('/catalog/services', (req, res, next) => bookingController.getServices(req, res, next));
+router.get('/catalog/services/:serviceId/professionals', (req, res, next) => bookingController.getProsForService(req, res, next));
+router.get('/bookings/estimate', (req, res, next) => bookingController.getBookingEstimate(req, res, next));
 
 // Authenticated booking routes
 router.post('/bookings', authenticateToken, requireRoles(['CUSTOMER']), validateRequest(createBookingSchema), (req, res, next) => bookingController.createBooking(req, res, next));

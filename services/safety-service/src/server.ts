@@ -174,6 +174,52 @@ app.put('/api/v1/admin/safety/sos/:id/resolve', authenticateToken, requireRoles(
   } catch (err) { next(err); }
 });
 
+// 3b. Admin: Fetch All Customer Safety & Service Reports
+app.get('/api/v1/admin/reports', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const reports = await pool.query(
+      `SELECT r.id as report_id, r.booking_id, r.reason, r.status as report_status, r.created_at as reported_at,
+              cu.id as customer_id, cu.full_name as customer_name, cu.phone_number as customer_phone,
+              pu.id as pro_id, pu.full_name as pro_name, pu.phone_number as pro_phone,
+              pp.verification_status as pro_verification_status, pp.rating_avg as pro_rating,
+              s.name as service_name,
+              rev.rating as review_rating, rev.comment as review_comment
+       FROM booking_reports r
+       JOIN bookings b ON r.booking_id = b.id
+       LEFT JOIN services s ON b.service_id = s.id
+       JOIN users cu ON r.reporter_id = cu.id
+       LEFT JOIN users pu ON b.pro_id = pu.id
+       LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
+       LEFT JOIN reviews rev ON b.id = rev.booking_id
+       ORDER BY r.created_at DESC`
+    );
+
+    res.json({ success: true, data: reports.rows });
+  } catch (err) { next(err); }
+});
+
+// 3c. Admin: Fetch All Customer Reviews & Star Ratings
+app.get('/api/v1/admin/reviews', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    const reviews = await pool.query(
+      `SELECT rev.id as review_id, rev.booking_id, rev.rating, rev.comment, rev.created_at,
+              cu.full_name as customer_name, cu.phone_number as customer_phone,
+              pu.id as pro_id, pu.full_name as pro_name, pu.phone_number as pro_phone,
+              pp.verification_status as pro_verification_status, pp.rating_avg as pro_rating,
+              s.name as service_name
+       FROM reviews rev
+       JOIN users cu ON rev.customer_id = cu.id
+       LEFT JOIN users pu ON rev.pro_id = pu.id
+       LEFT JOIN professional_profiles pp ON rev.pro_id = pp.user_id
+       LEFT JOIN bookings b ON rev.booking_id = b.id
+       LEFT JOIN services s ON b.service_id = s.id
+       ORDER BY rev.created_at DESC`
+    );
+
+    res.json({ success: true, data: reviews.rows });
+  } catch (err) { next(err); }
+});
+
 // 4. Admin: Fetch All Professionals & Document Verification Applications
 app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
   try {

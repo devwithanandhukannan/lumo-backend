@@ -209,6 +209,37 @@ app.get('/api/v1/bookings/my-bookings', authenticateToken, async (req: Authentic
   } catch (err) { next(err); }
 });
 
+// Fetch single booking telemetry by ID
+app.get('/api/v1/bookings/:id', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const bookingId = req.params.id;
+    const bookingRes = await pool.query(
+      `SELECT b.*,
+              s.name as service_name,
+              cu.full_name as customer_name,
+              cu.phone_number as customer_phone,
+              cu.latitude as customer_lat,
+              cu.longitude as customer_lng,
+              pu.full_name as pro_name,
+              pu.phone_number as pro_phone,
+              pp.latitude as pro_lat,
+              pp.longitude as pro_lng,
+              pp.rating_avg as pro_rating,
+              pp.verification_status as pro_verification
+       FROM bookings b
+       LEFT JOIN services s ON b.service_id = s.id
+       LEFT JOIN users cu ON b.customer_id = cu.id
+       LEFT JOIN users pu ON b.pro_id = pu.id
+       LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
+       WHERE b.id = $1`,
+      [bookingId]
+    );
+
+    if (bookingRes.rowCount === 0) throw new AppError('Booking not found', 404);
+    res.json({ success: true, data: bookingRes.rows[0] });
+  } catch (err) { next(err); }
+});
+
 // 3. Accept Booking (Professional)
 app.post('/api/v1/bookings/:id/accept', authenticateToken, requireRoles(['PROFESSIONAL']), async (req: AuthenticatedRequest, res, next) => {
   try {

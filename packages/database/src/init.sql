@@ -142,7 +142,8 @@ INSERT INTO service_categories (id, name, description) VALUES
 ('cat-elec', 'Electrical Repair', 'Wiring, switchboard, fan & appliance repairs'),
 ('cat-plumb', 'Plumbing Care', 'Tap leak fix, pipe repair & unblocking'),
 ('cat-salon', 'Salon & Spa', 'Home haircut, facial & grooming'),
-('cat-safety', 'Safety Escort', 'Verified women safety escort & night security')
+('cat-safety', 'Safety Escort', 'Verified women safety escort & night security'),
+('cat-other', 'Other Services', 'General & custom miscellaneous services')
 ON CONFLICT (id) DO NOTHING;
 
 -- 11. Services Catalog Table

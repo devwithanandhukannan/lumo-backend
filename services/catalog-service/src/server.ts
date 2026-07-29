@@ -13,10 +13,14 @@ const app = express();
 const PORT = process.env.PORT || 5004;
 const PROFF_CERT_DIR = process.env.DOCUMENT_VAULT_PATH || path.resolve(process.cwd(), '../api-gateway/proff_cert');
 
-// Runtime DB schema check for image_url
+// Runtime DB schema check for image_url & category seeding
 pool.query('ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT;')
   .then(() => console.log('🐘 PostgreSQL column image_url verified in services table'))
   .catch(err => console.warn('⚠️ Could not verify image_url column:', err.message));
+
+pool.query(`INSERT INTO service_categories (id, name, description) VALUES ('cat-other', 'Other Services', 'General & custom miscellaneous services') ON CONFLICT (id) DO NOTHING;`)
+  .then(() => console.log('🏷️ [CATALOG] "Other Services" (cat-other) category verified in DB'))
+  .catch(err => console.warn('⚠️ Could not seed cat-other category:', err.message));
 
 app.use(cors({
   origin: (origin, callback) => callback(null, origin || true),
@@ -203,16 +207,28 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
 
 app.post('/api/v1/catalog/services', async (req, res, next) => {
   try {
-    const { categoryId, name, description, basePrice, durationMinutes, imageUrl } = req.body;
+    const { categoryId, customCategoryName, name, description, basePrice, durationMinutes, imageUrl } = req.body;
     if (!name || !categoryId || basePrice === undefined) {
       throw new AppError('Name, categoryId, and basePrice are required', 400);
+    }
+
+    let finalCatId = categoryId;
+    if (customCategoryName && customCategoryName.trim().length > 0) {
+      const slug = customCategoryName.trim().toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+      finalCatId = `cat-${slug || 'custom'}`;
+      await pool.query(
+        `INSERT INTO service_categories (id, name, description)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
+        [finalCatId, customCategoryName.trim(), 'Custom admin service category']
+      );
     }
 
     const id = `srv-${randomUUID().slice(0, 8)}`;
     await pool.query(
       `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes, image_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, categoryId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10), imageUrl || null]
+      [id, finalCatId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10), imageUrl || null]
     );
 
     const fullService = await pool.query(
@@ -220,12 +236,62 @@ app.post('/api/v1/catalog/services', async (req, res, next) => {
       [id]
     );
 
-    console.log(`✨ [ADMIN-SERVICE-ADDED] Created service "${name}" (Price: ₹${basePrice})`);
+    console.log(`✨ [ADMIN-SERVICE-ADDED] Created service "${name}" under category "${fullService.rows[0]?.category_name}" (Price: ₹${basePrice})`);
 
     res.status(201).json({
       success: true,
       data: fullService.rows[0],
       message: 'New service created and listed for professionals'
+    });
+  } catch (err) { next(err); }
+});
+
+app.put('/api/v1/catalog/services/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { name, categoryId, customCategoryName, basePrice, description, durationMinutes, imageUrl } = req.body;
+
+    const sRes = await pool.query('SELECT * FROM services WHERE id = $1', [id]);
+    if (sRes.rowCount === 0) throw new AppError('Service not found', 404);
+
+    const current = sRes.rows[0];
+    let finalCatId = categoryId !== undefined ? categoryId : current.category_id;
+
+    if (customCategoryName && customCategoryName.trim().length > 0) {
+      const slug = customCategoryName.trim().toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+      finalCatId = `cat-${slug || 'custom'}`;
+      await pool.query(
+        `INSERT INTO service_categories (id, name, description)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
+        [finalCatId, customCategoryName.trim(), 'Custom admin service category']
+      );
+    }
+
+    const newName = name !== undefined ? name : current.name;
+    const newPrice = basePrice !== undefined ? parseFloat(basePrice) : current.base_price;
+    const newDesc = description !== undefined ? description : current.description;
+    const newDuration = durationMinutes !== undefined ? parseInt(durationMinutes, 10) : current.duration_minutes;
+    const newImg = imageUrl !== undefined ? imageUrl : current.image_url;
+
+    await pool.query(
+      `UPDATE services
+       SET name = $1, category_id = $2, base_price = $3, description = $4, duration_minutes = $5, image_url = $6
+       WHERE id = $7`,
+      [newName, finalCatId, newPrice, newDesc, newDuration, newImg, id]
+    );
+
+    const updatedRes = await pool.query(
+      `SELECT s.*, c.name as category_name FROM services s JOIN service_categories c ON s.category_id = c.id WHERE s.id = $1`,
+      [id]
+    );
+
+    console.log(`✏️ [ADMIN-SERVICE-UPDATED] Updated service "${newName}" (${id})`);
+
+    res.json({
+      success: true,
+      data: updatedRes.rows[0],
+      message: 'Service updated successfully'
     });
   } catch (err) { next(err); }
 });

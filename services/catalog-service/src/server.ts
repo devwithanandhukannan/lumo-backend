@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 import { pool } from '@lumo/database';
 import { AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
@@ -9,14 +11,42 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5004;
+const PROFF_CERT_DIR = process.env.DOCUMENT_VAULT_PATH || path.resolve(process.cwd(), '../api-gateway/proff_cert');
+
+// Runtime DB schema check for image_url
+pool.query('ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT;')
+  .then(() => console.log('🐘 PostgreSQL column image_url verified in services table'))
+  .catch(err => console.warn('⚠️ Could not verify image_url column:', err.message));
 
 app.use(cors({
   origin: (origin, callback) => callback(null, origin || true),
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'Catalog Service' }));
+
+app.post('/api/v1/catalog/upload-image', async (req, res, next) => {
+  try {
+    const { fileName, fileData } = req.body;
+    if (!fileData) throw new AppError('File content required', 400);
+
+    const cleanName = (fileName || 'service.png').replaceAll(/[^a-zA-Z0-9_.-]/g, '_');
+    const savedFileName = `service_${Date.now()}_${cleanName}`;
+
+    const buffer = Buffer.from(fileData.replace(/^data:.*?;base64,/, ''), 'base64');
+    if (!fs.existsSync(PROFF_CERT_DIR)) {
+      fs.mkdirSync(PROFF_CERT_DIR, { recursive: true });
+    }
+
+    const targetPath = path.join(PROFF_CERT_DIR, savedFileName);
+    fs.writeFileSync(targetPath, buffer);
+    console.log(`🖼️ [SERVICE-IMAGE-SAVED] Saved ${savedFileName} (${buffer.length} bytes) -> ${targetPath}`);
+
+    const imageUrl = `/proff_cert/${savedFileName}`;
+    res.json({ success: true, data: { imageUrl } });
+  } catch (err) { next(err); }
+});
 
 function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -173,16 +203,16 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
 
 app.post('/api/v1/catalog/services', async (req, res, next) => {
   try {
-    const { categoryId, name, description, basePrice, durationMinutes } = req.body;
+    const { categoryId, name, description, basePrice, durationMinutes, imageUrl } = req.body;
     if (!name || !categoryId || basePrice === undefined) {
       throw new AppError('Name, categoryId, and basePrice are required', 400);
     }
 
     const id = `srv-${randomUUID().slice(0, 8)}`;
     await pool.query(
-      `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, categoryId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10)]
+      `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes, image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, categoryId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10), imageUrl || null]
     );
 
     const fullService = await pool.query(

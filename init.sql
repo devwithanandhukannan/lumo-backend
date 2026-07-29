@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS services (
     description TEXT,
     base_price NUMERIC(10,2) NOT NULL,
     duration_minutes INT NOT NULL DEFAULT 60,
+    image_url TEXT,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

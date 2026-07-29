@@ -55,7 +55,7 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
       SELECT u.id as user_id, u.full_name, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.custom_price, pos.km_charge_per_km as per_km_rate
       FROM users u
       JOIN professional_profiles p ON u.id = p.user_id
-      LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1)
+      JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1 AND pos.is_active = true)
       WHERE u.role = 'PROFESSIONAL'
         AND p.verification_status IN ('APPROVED', 'PENDING')
         AND p.is_busy = false
@@ -366,6 +366,49 @@ app.post('/api/v1/bookings/:id/report', authenticateToken, async (req: Authentic
     );
 
     res.status(201).json({ success: true, message: 'Report logged successfully and sent to Safety Control Center.' });
+  } catch (err) { next(err); }
+});
+
+// 8. Cancel Booking (Customer or Professional)
+app.post('/api/v1/bookings/:id/cancel', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const userId = req.user!.userId;
+    const bookingId = req.params.id;
+    const { reason } = req.body;
+
+    const bRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
+    if (bRes.rowCount === 0) throw new AppError('Booking request not found', 404);
+
+    const booking = bRes.rows[0];
+    if (booking.customer_id !== userId && booking.pro_id !== userId && req.user!.role !== 'ADMIN') {
+      throw new AppError('Unauthorized to cancel this booking', 403);
+    }
+
+    if (booking.status === 'COMPLETED' || booking.status === 'CANCELLED') {
+      throw new AppError(`Booking is already ${booking.status.toLowerCase()}`, 400);
+    }
+
+    const cancelReasonText = reason || (booking.customer_id === userId ? 'Cancelled by Customer' : 'Cancelled by Professional');
+
+    const updatedRes = await pool.query(
+      `UPDATE bookings
+       SET status = 'CANCELLED', cancel_reason = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [cancelReasonText, bookingId]
+    );
+
+    if (booking.pro_id) {
+      await pool.query('UPDATE professional_profiles SET is_busy = false WHERE user_id = $1', [booking.pro_id]);
+    }
+
+    console.log(`🛑 [BOOKING-CANCELLED] Booking "${bookingId}" cancelled by user "${userId}" (${cancelReasonText})`);
+
+    res.json({
+      success: true,
+      message: 'Booking request cancelled successfully',
+      data: updatedRes.rows[0]
+    });
   } catch (err) { next(err); }
 });
 

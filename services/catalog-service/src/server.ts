@@ -157,11 +157,10 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
       FROM users u
       JOIN professional_profiles pp ON pp.user_id = u.id
       JOIN services s ON s.id = $1
-      LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1)
+      JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1 AND pos.is_active = true)
       WHERE u.role = 'PROFESSIONAL'
         AND pp.verification_status IN ('APPROVED', 'PENDING')
         AND pp.is_blacklisted = false
-        AND (pos.is_active IS NULL OR pos.is_active = true)
         ${femaleOnly ? "AND u.gender = 'FEMALE'" : ''}
     `;
 

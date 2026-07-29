@@ -376,7 +376,7 @@ app.post('/api/v1/auth/otp/verify', authLimiter, async (req: Request, res: Respo
     const otpRes = await client.query('SELECT * FROM otps WHERE phone_number = $1', [phoneNumber]);
     const record = otpRes.rows[0];
 
-    if (!record || record.otp !== otp || Number(record.expires_at) < Date.now()) {
+    if (!record || record.otp !== String(otp) || Number(record.expires_at) < Date.now()) {
       throw new AppError('Invalid or expired OTP code', 400);
     }
 

@@ -27,6 +27,7 @@ const CATALOG_SERVICE_URL = process.env.CATALOG_SERVICE_URL || 'http://localhost
 const BOOKING_SERVICE_URL = process.env.BOOKING_SERVICE_URL || 'http://localhost:5005';
 const GEO_SERVICE_URL = process.env.GEO_SERVICE_URL || 'http://localhost:5006';
 const SAFETY_SERVICE_URL = process.env.SAFETY_SERVICE_URL || 'http://localhost:5007';
+const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:5008';
 const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:5009';
 
 // Single unified static folder for /proff_cert document vault
@@ -152,6 +153,7 @@ app.use('/api/v1/catalog', createServiceProxy(CATALOG_SERVICE_URL, '/api/v1/cata
 app.use('/api/v1/bookings', createServiceProxy(BOOKING_SERVICE_URL, '/api/v1/bookings'));
 app.use('/api/v1/geo', createServiceProxy(GEO_SERVICE_URL, '/api/v1/geo'));
 app.use('/api/v1/safety', createServiceProxy(SAFETY_SERVICE_URL, '/api/v1/safety'));
+app.use('/api/v1/payments', createServiceProxy(PAYMENT_SERVICE_URL, '/api/v1/payments'));
 app.use('/api/v1/notifications', createServiceProxy(NOTIFICATION_SERVICE_URL, '/api/v1/notifications'));
 app.use('/api/v1/admin', createServiceProxy(SAFETY_SERVICE_URL, '/api/v1/admin'));
 

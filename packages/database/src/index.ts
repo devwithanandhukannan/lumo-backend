@@ -49,12 +49,27 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS verification_notes TEXT;
 
         ALTER TABLE services ADD COLUMN IF NOT EXISTS per_km_rate NUMERIC(10,2) DEFAULT 15.00;
+        ALTER TABLE services ADD COLUMN IF NOT EXISTS commission_type VARCHAR(20) DEFAULT 'FLAT';
+        ALTER TABLE services ADD COLUMN IF NOT EXISTS commission_value NUMERIC(10,2) DEFAULT 50.00;
+        ALTER TABLE services ADD COLUMN IF NOT EXISTS commission_pct NUMERIC(5,2) DEFAULT 15.00;
 
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS travel_distance_km NUMERIC(6,2) DEFAULT 0.00;
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS travel_charge NUMERIC(10,2) DEFAULT 0.00;
         ALTER TABLE bookings ADD COLUMN IF NOT EXISTS base_amount NUMERIC(10,2) DEFAULT 0.00;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee NUMERIC(10,2) DEFAULT 0.00;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee_paid BOOLEAN DEFAULT FALSE;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee_paid_at TIMESTAMPTZ;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS razorpay_platform_order_id VARCHAR(100);
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS razorpay_platform_payment_id VARCHAR(100);
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS balance_amount NUMERIC(10,2) DEFAULT 0.00;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS balance_paid BOOLEAN DEFAULT FALSE;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS balance_paid_at TIMESTAMPTZ;
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS razorpay_balance_order_id VARCHAR(100);
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS razorpay_balance_payment_id VARCHAR(100);
+        ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_status VARCHAR(30) DEFAULT 'UNPAID';
+
 
         ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS km_charge_per_km NUMERIC(8,2) DEFAULT 15.00;
         ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS per_km_rate NUMERIC(8,2) DEFAULT 15.00;

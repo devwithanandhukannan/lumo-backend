@@ -247,7 +247,7 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
     let offeredServicesByPro: Record<string, any[]> = {};
     try {
       const offeredRes = await pool.query(
-        `SELECT pos.pro_id, pos.service_id, pos.custom_price, pos.is_active, s.name as service_name, s.base_price
+        `SELECT pos.pro_id, pos.service_id, pos.custom_price, COALESCE(pos.km_charge_per_km, pos.per_km_rate, 15.00) as km_charge_per_km, pos.is_active, s.name as service_name, s.base_price
          FROM pro_offered_services pos
          JOIN services s ON pos.service_id = s.id`
       );
@@ -258,7 +258,8 @@ app.get('/api/v1/admin/pro/verifications', authenticateToken, requireRoles(['ADM
           service_name: row.service_name,
           base_price: parseFloat(row.base_price || '0'),
           custom_price: row.custom_price !== null ? parseFloat(row.custom_price) : null,
-          is_active: row.is_active,
+          km_charge_per_km: parseFloat(row.km_charge_per_km || '15.00'),
+          is_active: Boolean(row.is_active),
         });
       }
     } catch (_) {}

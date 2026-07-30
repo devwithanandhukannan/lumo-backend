@@ -323,10 +323,21 @@ app.post('/api/v1/pro/custom-services/toggle', authenticateToken, async (req: Au
   try {
     const { requestId, isActive } = req.body;
     const proId = req.user!.userId;
-    await pool.query(
-      `UPDATE pending_service_requests SET is_active = $1, updated_at = NOW() WHERE id = $2 AND pro_id = $3`,
+    const reqRes = await pool.query(
+      `UPDATE pending_service_requests SET is_active = $1, updated_at = NOW() WHERE id = $2 AND pro_id = $3 RETURNING service_name`,
       [Boolean(isActive), requestId, proId]
     );
+    const serviceName = reqRes.rows[0]?.service_name;
+    if (serviceName) {
+      const srvRes = await pool.query('SELECT id FROM services WHERE LOWER(name) = LOWER($1)', [serviceName]);
+      const srvId = srvRes.rows[0]?.id;
+      if (srvId) {
+        await pool.query(
+          `UPDATE pro_offered_services SET is_active = $1, updated_at = NOW() WHERE pro_id = $2 AND service_id = $3`,
+          [Boolean(isActive), proId, srvId]
+        );
+      }
+    }
     res.json({ success: true, message: 'Custom service request status updated' });
   } catch (err) { next(err); }
 });

@@ -22,6 +22,44 @@ pool.query(`INSERT INTO service_categories (id, name, description) VALUES ('cat-
   .then(() => console.log('🏷️ [CATALOG] "Other Services" (cat-other) category verified in DB'))
   .catch(err => console.warn('⚠️ Could not seed cat-other category:', err.message));
 
+// Backfill any approved custom service requests to pro_offered_services
+async function syncApprovedCustomServices() {
+  try {
+    const approvedRes = await pool.query(
+      `SELECT * FROM pending_service_requests WHERE status = 'APPROVED'`
+    );
+    for (const reqItem of approvedRes.rows) {
+      if (!reqItem.pro_id || !reqItem.service_name) continue;
+
+      let srvRes = await pool.query('SELECT id FROM services WHERE LOWER(name) = LOWER($1)', [reqItem.service_name]);
+      let srvId = srvRes.rows[0]?.id;
+
+      if (!srvId) {
+        srvId = `srv-${randomUUID().slice(0, 8)}`;
+        const price = reqItem.suggested_price ? parseFloat(reqItem.suggested_price) : 200.00;
+        await pool.query(
+          `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes)
+           VALUES ($1, 'cat-other', $2, $3, $4, 60)`,
+          [srvId, reqItem.service_name, reqItem.description || '', price]
+        );
+      }
+
+      const offeredId = `offered-${randomUUID().slice(0, 8)}`;
+      const price = reqItem.suggested_price ? parseFloat(reqItem.suggested_price) : null;
+      await pool.query(
+        `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, is_active, updated_at)
+         VALUES ($1, $2, $3, $4, true, NOW())
+         ON CONFLICT (pro_id, service_id) DO UPDATE SET is_active = COALESCE($5, true), custom_price = COALESCE($4, pro_offered_services.custom_price), updated_at = NOW()`,
+        [offeredId, reqItem.pro_id, srvId, price, reqItem.is_active !== false]
+      );
+    }
+    console.log(`✨ [CATALOG] Backfilled approved custom service requests to pro_offered_services`);
+  } catch (err: any) {
+    console.warn('⚠️ Could not backfill approved custom services:', err.message);
+  }
+}
+syncApprovedCustomServices();
+
 app.use(cors({
   origin: (origin, callback) => callback(null, origin || true),
   credentials: true,
@@ -206,7 +244,7 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
 
 app.post('/api/v1/catalog/services', async (req, res, next) => {
   try {
-    const { categoryId, customCategoryName, name, description, basePrice, durationMinutes, imageUrl } = req.body;
+    const { categoryId, customCategoryName, name, description, basePrice, durationMinutes, imageUrl, commissionType, commissionValue, commissionPct } = req.body;
     if (!name || !categoryId || basePrice === undefined) {
       throw new AppError('Name, categoryId, and basePrice are required', 400);
     }
@@ -223,11 +261,15 @@ app.post('/api/v1/catalog/services', async (req, res, next) => {
       );
     }
 
+    const commType = commissionType || 'FLAT';
+    const commVal = commissionValue !== undefined ? parseFloat(commissionValue) : 50.00;
+    const commPct = commissionPct !== undefined ? parseFloat(commissionPct) : 15.00;
+
     const id = `srv-${randomUUID().slice(0, 8)}`;
     await pool.query(
-      `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes, image_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, finalCatId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10), imageUrl || null]
+      `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes, image_url, commission_type, commission_value, commission_pct)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [id, finalCatId, name, description || '', parseFloat(basePrice), parseInt(durationMinutes || '60', 10), imageUrl || null, commType, commVal, commPct]
     );
 
     const fullService = await pool.query(
@@ -235,7 +277,7 @@ app.post('/api/v1/catalog/services', async (req, res, next) => {
       [id]
     );
 
-    console.log(`✨ [ADMIN-SERVICE-ADDED] Created service "${name}" under category "${fullService.rows[0]?.category_name}" (Price: ₹${basePrice})`);
+    console.log(`✨ [ADMIN-SERVICE-ADDED] Created service "${name}" under category "${fullService.rows[0]?.category_name}" (Price: ₹${basePrice}, Platform Fee: ₹${commVal})`);
 
     res.status(201).json({
       success: true,
@@ -248,7 +290,7 @@ app.post('/api/v1/catalog/services', async (req, res, next) => {
 app.put('/api/v1/catalog/services/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, categoryId, customCategoryName, basePrice, description, durationMinutes, imageUrl } = req.body;
+    const { name, categoryId, customCategoryName, basePrice, description, durationMinutes, imageUrl, commissionType, commissionValue, commissionPct } = req.body;
 
     const sRes = await pool.query('SELECT * FROM services WHERE id = $1', [id]);
     if (sRes.rowCount === 0) throw new AppError('Service not found', 404);
@@ -272,12 +314,16 @@ app.put('/api/v1/catalog/services/:id', async (req, res, next) => {
     const newDesc = description !== undefined ? description : current.description;
     const newDuration = durationMinutes !== undefined ? parseInt(durationMinutes, 10) : current.duration_minutes;
     const newImg = imageUrl !== undefined ? imageUrl : current.image_url;
+    const newCommType = commissionType !== undefined ? commissionType : (current.commission_type || 'FLAT');
+    const newCommVal = commissionValue !== undefined ? parseFloat(commissionValue) : (parseFloat(current.commission_value) || 50.00);
+    const newCommPct = commissionPct !== undefined ? parseFloat(commissionPct) : (parseFloat(current.commission_pct) || 15.00);
 
     await pool.query(
       `UPDATE services
-       SET name = $1, category_id = $2, base_price = $3, description = $4, duration_minutes = $5, image_url = $6
-       WHERE id = $7`,
-      [newName, finalCatId, newPrice, newDesc, newDuration, newImg, id]
+       SET name = $1, category_id = $2, base_price = $3, description = $4, duration_minutes = $5, image_url = $6,
+           commission_type = $7, commission_value = $8, commission_pct = $9
+       WHERE id = $10`,
+      [newName, finalCatId, newPrice, newDesc, newDuration, newImg, newCommType, newCommVal, newCommPct, id]
     );
 
     const updatedRes = await pool.query(
@@ -285,7 +331,7 @@ app.put('/api/v1/catalog/services/:id', async (req, res, next) => {
       [id]
     );
 
-    console.log(`✏️ [ADMIN-SERVICE-UPDATED] Updated service "${newName}" (${id})`);
+    console.log(`✏️ [ADMIN-SERVICE-UPDATED] Updated service "${newName}" (${id}) - Platform Fee: ${newCommVal}`);
 
     res.json({
       success: true,
@@ -329,22 +375,38 @@ app.post('/api/v1/catalog/service-requests/:id/approve', async (req, res, next) 
 
     const price = basePrice ? parseFloat(basePrice) : (reqItem.suggested_price ? parseFloat(reqItem.suggested_price) : 299.00);
     const catId = categoryId || reqItem.category_id || 'cat-clean';
-    const srvId = `srv-${randomUUID().slice(0, 8)}`;
 
-    // Add to active services catalog
-    await pool.query(
-      `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes)
-       VALUES ($1, $2, $3, $4, $5, 60)`,
-      [srvId, catId, reqItem.service_name, reqItem.description || '', price]
-    );
+    // Check if service already exists in services catalog
+    let srvRes = await pool.query('SELECT id FROM services WHERE LOWER(name) = LOWER($1)', [reqItem.service_name]);
+    let srvId = srvRes.rows[0]?.id;
 
-    // Update request status to APPROVED
+    if (!srvId) {
+      srvId = `srv-${randomUUID().slice(0, 8)}`;
+      await pool.query(
+        `INSERT INTO services (id, category_id, name, description, base_price, duration_minutes)
+         VALUES ($1, $2, $3, $4, $5, 60)`,
+        [srvId, catId, reqItem.service_name, reqItem.description || '', price]
+      );
+    }
+
+    // Auto-link to pro_offered_services for requesting professional
+    if (reqItem.pro_id) {
+      const offeredId = `offered-${randomUUID().slice(0, 8)}`;
+      await pool.query(
+        `INSERT INTO pro_offered_services (id, pro_id, service_id, custom_price, is_active, updated_at)
+         VALUES ($1, $2, $3, $4, true, NOW())
+         ON CONFLICT (pro_id, service_id) DO UPDATE SET is_active = true, custom_price = COALESCE($4, pro_offered_services.custom_price), updated_at = NOW()`,
+        [offeredId, reqItem.pro_id, srvId, price]
+      );
+    }
+
+    // Update request status to APPROVED & is_active = true
     await pool.query(
-      `UPDATE pending_service_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
+      `UPDATE pending_service_requests SET status = 'APPROVED', is_active = true, updated_at = NOW() WHERE id = $1`,
       [id]
     );
 
-    console.log(`✅ [SERVICE-REQUEST-APPROVED] Approved "${reqItem.service_name}" into service catalog`);
+    console.log(`✅ [SERVICE-REQUEST-APPROVED] Approved "${reqItem.service_name}" into service catalog & linked to pro ${reqItem.pro_id}`);
 
     res.json({
       success: true,

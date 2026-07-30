@@ -76,8 +76,10 @@ CREATE TABLE IF NOT EXISTS professional_profiles (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5b. Pro Offered Services (with commission hidden from pros)
+-- 5b. Pro Offered Services (with per-service platform fee/commission)
 ALTER TABLE IF EXISTS services ADD COLUMN IF NOT EXISTS commission_pct NUMERIC(5,2) DEFAULT 15.00;
+ALTER TABLE IF EXISTS services ADD COLUMN IF NOT EXISTS commission_type VARCHAR(20) DEFAULT 'FLAT';
+ALTER TABLE IF EXISTS services ADD COLUMN IF NOT EXISTS commission_value NUMERIC(10,2) DEFAULT 50.00;
 
 -- 5c. Pending Custom Service Requests from Professionals
 CREATE TABLE IF NOT EXISTS pending_service_requests (

@@ -62,8 +62,17 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
     const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, targetProId, selectedProId } = req.body;
     const chosenProId = selectedProId || targetProId;
 
-    // Ensure self-healing column migration
-    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;').catch(() => {});
+    // Self-healing: Reset is_busy = false for pros without active uncompleted bookings
+    await pool.query(`
+      UPDATE professional_profiles
+      SET is_busy = false
+      WHERE is_busy = true
+        AND user_id NOT IN (
+          SELECT pro_id FROM bookings
+          WHERE status IN ('ACCEPTED', 'CONFIRMED', 'IN_PROGRESS', 'START_OTP_VERIFIED')
+            AND pro_id IS NOT NULL
+        )
+    `).catch(() => {});
 
     const srvRes = await pool.query('SELECT * FROM services WHERE id = $1', [serviceId]);
     const service = srvRes.rows[0];

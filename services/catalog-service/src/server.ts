@@ -131,10 +131,23 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
       const custLat = parseFloat(latStr);
       const custLng = parseFloat(lngStr);
 
+      // Self-healing: Reset is_busy = false for pros without active uncompleted bookings
+      await pool.query(`
+        UPDATE professional_profiles
+        SET is_busy = false
+        WHERE is_busy = true
+          AND user_id NOT IN (
+            SELECT pro_id FROM bookings
+            WHERE status IN ('ACCEPTED', 'CONFIRMED', 'IN_PROGRESS', 'START_OTP_VERIFIED')
+              AND pro_id IS NOT NULL
+          )
+      `).catch(() => {});
+
       const prosRes = await pool.query(`
-        SELECT u.id as pro_id, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude
+        SELECT u.id as pro_id, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.service_id
         FROM users u
         JOIN professional_profiles p ON u.id = p.user_id
+        JOIN pro_offered_services pos ON pos.pro_id = u.id AND pos.is_active = true
         WHERE u.role = 'PROFESSIONAL'
           AND p.verification_status IN ('APPROVED', 'PENDING')
           AND p.is_busy = false
@@ -143,6 +156,7 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
 
       services = services.map(service => {
         const matchingPros = pros.filter(pro => {
+          if (pro.service_id !== service.id) return false;
           let curLoc = pro.current_location;
           if (typeof curLoc === 'string') {
             try { curLoc = JSON.parse(curLoc); } catch (_) {}
@@ -186,6 +200,18 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
       return;
     }
 
+    // Self-healing: Reset is_busy = false for pros without active uncompleted bookings
+    await pool.query(`
+      UPDATE professional_profiles
+      SET is_busy = false
+      WHERE is_busy = true
+        AND user_id NOT IN (
+          SELECT pro_id FROM bookings
+          WHERE status IN ('ACCEPTED', 'CONFIRMED', 'IN_PROGRESS', 'START_OTP_VERIFIED')
+            AND pro_id IS NOT NULL
+        )
+    `).catch(() => {});
+
     const query = `
       SELECT u.id, u.full_name, u.gender,
              pp.latitude, pp.longitude, pp.rating_avg,
@@ -199,11 +225,21 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
       WHERE u.role = 'PROFESSIONAL'
         AND pp.verification_status IN ('APPROVED', 'PENDING')
         AND pp.is_blacklisted = false
-        ${femaleOnly ? "AND u.gender = 'FEMALE'" : ''}
+        AND pp.is_busy = false
     `;
 
     const prosRes = await pool.query(query, [serviceId]);
-    const pros = prosRes.rows;
+    let pros = prosRes.rows;
+
+    let isFemaleFallback = false;
+    if (femaleOnly) {
+      const femalePros = pros.filter(p => (p.gender || '').toUpperCase() === 'FEMALE');
+      if (femalePros.length > 0) {
+        pros = femalePros;
+      } else {
+        isFemaleFallback = true;
+      }
+    }
 
     const nearbyPros = pros
       .map((p) => {

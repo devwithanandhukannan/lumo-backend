@@ -18,6 +18,9 @@
     "dev:booking": "npm --workspace=services/booking-service run dev",
     "dev:safety": "npm --workspace=services/safety-service run dev"
   },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  },
   "devDependencies": {
     "concurrently": "^10.0.3",
     "tsx": "^4.10.5",

@@ -271,6 +271,55 @@ app.get('/api/v1/payments/booking/:id/summary', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// 6. Razorpay Asynchronous Webhook Endpoint
+app.post('/api/v1/payments/webhook', async (req, res) => {
+  try {
+    const signature = req.headers['x-razorpay-signature'] as string;
+    const bodyStr = JSON.stringify(req.body);
+
+    if (signature) {
+      const expectedSignature = crypto
+        .createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
+        .update(bodyStr)
+        .digest('hex');
+
+      if (signature !== expectedSignature) {
+        console.warn('⚠️ [RAZORPAY-WEBHOOK] Invalid HMAC Signature received');
+        return res.status(400).json({ success: false, message: 'Invalid webhook signature' });
+      }
+    }
+
+    const { event, payload } = req.body;
+    console.log(`🔔 [RAZORPAY-WEBHOOK] Received event: ${event}`);
+
+    if (event === 'payment.captured' || event === 'order.paid') {
+      const entity = payload?.payment?.entity || payload?.order?.entity;
+      const notes = entity?.notes || {};
+      const bookingId = notes.bookingId;
+
+      if (bookingId) {
+        if (notes.stage === 'PLATFORM_FEE') {
+          await pool.query(
+            `UPDATE bookings SET platform_fee_paid = true, platform_fee_paid_at = NOW(), payment_status = 'PARTIALLY_PAID', status = 'CONFIRMED' WHERE id = $1`,
+            [bookingId]
+          );
+        } else if (notes.stage === 'BALANCE') {
+          await pool.query(
+            `UPDATE bookings SET balance_paid = true, balance_paid_at = NOW(), payment_status = 'PAID' WHERE id = $1`,
+            [bookingId]
+          );
+        }
+      }
+    }
+
+    res.json({ success: true, received: true });
+  } catch (err: any) {
+    console.error('❌ [RAZORPAY-WEBHOOK] Error handling webhook:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
 app.use(errorHandler);
 
 const server = app.listen(PORT, () => console.log(`💳 Payment Service running with Razorpay on port ${PORT}`));

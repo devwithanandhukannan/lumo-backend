@@ -109,6 +109,25 @@ app.get('/api/v1/catalog/categories', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+app.post('/api/v1/catalog/categories', async (req, res, next) => {
+  try {
+    const { name, description, icon } = req.body;
+    if (!name) {
+      res.status(400).json({ success: false, message: 'Category name is required' });
+      return;
+    }
+    const id = `cat-${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
+    const result = await pool.query(
+      `INSERT INTO service_categories (id, name, description, icon, is_active)
+       VALUES ($1, $2, $3, $4, true)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description
+       RETURNING *`,
+      [id, name, description || '', icon || 'Wrench']
+    );
+    res.status(201).json({ success: true, data: result.rows[0] });
+  } catch (err) { next(err); }
+});
+
 app.get('/api/v1/catalog/services', async (req, res, next) => {
   try {
     const categoryId = req.query.categoryId as string | undefined;
@@ -131,7 +150,6 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
       const custLat = parseFloat(latStr);
       const custLng = parseFloat(lngStr);
 
-      // Self-healing: Reset is_busy = false for pros without active uncompleted bookings
       await pool.query(`
         UPDATE professional_profiles
         SET is_busy = false
@@ -147,16 +165,15 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
         SELECT u.id as pro_id, u.gender, p.coverage_radius_km, p.current_location, p.latitude, p.longitude, pos.service_id
         FROM users u
         JOIN professional_profiles p ON u.id = p.user_id
-        JOIN pro_offered_services pos ON pos.pro_id = u.id AND pos.is_active = true
+        LEFT JOIN pro_offered_services pos ON pos.pro_id = u.id AND pos.is_active = true
         WHERE u.role = 'PROFESSIONAL'
           AND p.verification_status IN ('APPROVED', 'PENDING')
-          AND p.is_busy = false
       `);
       const pros = prosRes.rows;
 
       services = services.map(service => {
         const matchingPros = pros.filter(pro => {
-          if (pro.service_id !== service.id) return false;
+          if (pro.service_id && pro.service_id !== service.id) return false;
           let curLoc = pro.current_location;
           if (typeof curLoc === 'string') {
             try { curLoc = JSON.parse(curLoc); } catch (_) {}
@@ -174,6 +191,12 @@ app.get('/api/v1/catalog/services', async (req, res, next) => {
           is_available: matchingPros.length > 0,
         };
       });
+
+      // Filter to return available services for location, or all services if none match
+      const availableServices = services.filter(s => s.is_available);
+      if (availableServices.length > 0) {
+        services = availableServices;
+      }
     } else {
       services = services.map(service => ({
         ...service,
@@ -243,8 +266,25 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
 
     let nearbyPros = pros
       .map((p) => {
-        const pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : customerLat;
-        const pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : customerLng;
+        let pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : NaN;
+        let pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : NaN;
+
+        if (isNaN(pLat) || isNaN(pLng)) {
+          let curLoc = p.current_location;
+          if (typeof curLoc === 'string') {
+            try { curLoc = JSON.parse(curLoc); } catch (_) {}
+          }
+          if (curLoc && typeof curLoc === 'object') {
+            pLat = parseFloat(curLoc.latitude || curLoc.lat || 'NaN');
+            pLng = parseFloat(curLoc.longitude || curLoc.lng || 'NaN');
+          }
+        }
+
+        if (isNaN(pLat) || isNaN(pLng) || (pLat === 0 && pLng === 0)) {
+          pLat = 9.9312;
+          pLng = 76.2673;
+        }
+
         const distKm = calculateDistanceKm(customerLat, customerLng, pLat, pLng);
         const kmCharge = parseFloat(p.km_charge_per_km) || 15;
         const basePrice = parseFloat(p.service_price) || 200;

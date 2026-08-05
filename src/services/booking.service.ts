@@ -78,8 +78,25 @@ export class BookingService {
 
     let nearbyPros = pros
       .map((p) => {
-        const pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : customerLat;
-        const pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : customerLng;
+        let pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : NaN;
+        let pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : NaN;
+
+        if (isNaN(pLat) || isNaN(pLng)) {
+          let curLoc = p.current_location;
+          if (typeof curLoc === 'string') {
+            try { curLoc = JSON.parse(curLoc); } catch (_) {}
+          }
+          if (curLoc && typeof curLoc === 'object') {
+            pLat = parseFloat(curLoc.latitude || curLoc.lat || 'NaN');
+            pLng = parseFloat(curLoc.longitude || curLoc.lng || 'NaN');
+          }
+        }
+
+        if (isNaN(pLat) || isNaN(pLng) || (pLat === 0 && pLng === 0)) {
+          pLat = 9.9312;
+          pLng = 76.2673;
+        }
+
         const distKm = haversineKm(customerLat, customerLng, pLat, pLng);
         const kmCharge = parseFloat(p.km_charge_per_km) || 15;
         const basePrice = parseFloat(p.service_price) || 0;

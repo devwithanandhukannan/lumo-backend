@@ -269,7 +269,20 @@ app.get('/api/v1/bookings/my-bookings', authenticateToken, async (req: Authentic
       [userId, role]
     );
 
-    res.json({ success: true, data: bookings.rows });
+    const rows = bookings.rows.map((b: any) => {
+      const isFeePaid = b.platform_fee_paid === true || ['CONFIRMED', 'NAVIGATING', 'ARRIVED', 'IN_PROGRESS', 'START_OTP_VERIFIED', 'JOB_COMPLETED_PAYMENT_DUE', 'COMPLETED'].includes((b.status || '').toUpperCase());
+      if (!isFeePaid) {
+        if (role === 'PROFESSIONAL') {
+          b.customer_name = 'Customer (Locked 🔒)';
+          b.customer_phone = '🔒 Pay Platform Fee to Unlock Contact';
+        } else {
+          b.pro_phone = '🔒 Pay Platform Fee to Unlock Contact';
+        }
+      }
+      return b;
+    });
+
+    res.json({ success: true, data: rows });
   } catch (err) { next(err); }
 });
 

@@ -213,19 +213,19 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
     `).catch(() => {});
 
     const query = `
-      SELECT u.id, u.full_name, u.gender,
+      SELECT u.id, u.full_name, u.gender, u.avatar_url,
              pp.latitude, pp.longitude, pp.rating_avg,
              pp.total_jobs_completed, pp.coverage_radius_km,
+             pp.verification_status, pp.face_verified, pp.face_verification_url,
              COALESCE(pos.km_charge_per_km, pos.per_km_rate, s.per_km_rate, 15.00) as km_charge_per_km,
              COALESCE(pos.custom_price, s.base_price, 200.00) as service_price
       FROM users u
       JOIN professional_profiles pp ON pp.user_id = u.id
       JOIN services s ON s.id = $1
-      JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1 AND pos.is_active = true)
+      LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1 AND pos.is_active = true)
       WHERE u.role = 'PROFESSIONAL'
         AND pp.verification_status IN ('APPROVED', 'PENDING')
         AND pp.is_blacklisted = false
-        AND pp.is_busy = false
     `;
 
     const prosRes = await pool.query(query, [serviceId]);
@@ -241,7 +241,7 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
       }
     }
 
-    const nearbyPros = pros
+    let nearbyPros = pros
       .map((p) => {
         const pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : customerLat;
         const pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : customerLng;
@@ -254,6 +254,9 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
           proId: p.id,
           name: p.full_name,
           gender: p.gender,
+          avatarUrl: p.avatar_url || p.face_verification_url,
+          isVerified: p.verification_status === 'APPROVED' || p.face_verified === true,
+          verificationStatus: p.verification_status || 'APPROVED',
           ratingAvg: parseFloat(p.rating_avg) || 5.0,
           totalJobsCompleted: p.total_jobs_completed || 0,
           distanceKm: parseFloat(distKm.toFixed(2)),
@@ -263,8 +266,12 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
           estimatedTotal,
           coverageRadiusKm: parseFloat(p.coverage_radius_km) || 50,
         };
-      })
-      .filter((p) => p.distanceKm <= p.coverageRadiusKm);
+      });
+
+    const inRangePros = nearbyPros.filter((p) => p.distanceKm <= p.coverageRadiusKm);
+    if (inRangePros.length > 0) {
+      nearbyPros = inRangePros;
+    }
 
     if (sortBy === 'rating') {
       nearbyPros.sort((a, b) => b.ratingAvg - a.ratingAvg);

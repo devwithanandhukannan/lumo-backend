@@ -58,30 +58,29 @@ export class BookingService {
     sortBy: 'distance' | 'rating' | 'price' = 'distance'
   ) {
     const query = `
-      SELECT u.id, u.full_name, u.gender,
+      SELECT u.id, u.full_name, u.gender, u.avatar_url,
              pp.latitude, pp.longitude, pp.rating_avg,
              pp.total_jobs_completed, pp.coverage_radius_km,
-             pos.km_charge_per_km, pos.custom_price as service_price
-      FROM pro_offered_services pos
-      JOIN professional_profiles pp ON pp.user_id = pos.pro_id
-      JOIN users u ON u.id = pos.pro_id
-      WHERE pos.service_id = $1
-        AND pos.is_active = true
-        AND pp.is_online = true
-        AND pp.verification_status = 'APPROVED'
+             pp.verification_status, pp.face_verified, pp.face_verification_url,
+             COALESCE(pos.km_charge_per_km, pos.per_km_rate, 15.00) as km_charge_per_km,
+             COALESCE(pos.custom_price, 200.00) as service_price
+      FROM users u
+      JOIN professional_profiles pp ON pp.user_id = u.id
+      LEFT JOIN pro_offered_services pos ON (pos.pro_id = u.id AND pos.service_id = $1 AND pos.is_active = true)
+      WHERE u.role = 'PROFESSIONAL'
+        AND pp.verification_status IN ('APPROVED', 'PENDING')
         AND pp.is_blacklisted = false
-        AND pp.latitude IS NOT NULL
-        AND pp.longitude IS NOT NULL
         ${femaleOnly ? "AND u.gender = 'FEMALE'" : ''}
     `;
 
     const res = await pool.query(query, [serviceId]);
     const pros = res.rows;
 
-    // Filter by coverage radius and compute distance
-    const nearbyPros = pros
+    let nearbyPros = pros
       .map((p) => {
-        const distKm = haversineKm(customerLat, customerLng, p.latitude, p.longitude);
+        const pLat = (p.latitude && !isNaN(parseFloat(p.latitude))) ? parseFloat(p.latitude) : customerLat;
+        const pLng = (p.longitude && !isNaN(parseFloat(p.longitude))) ? parseFloat(p.longitude) : customerLng;
+        const distKm = haversineKm(customerLat, customerLng, pLat, pLng);
         const kmCharge = parseFloat(p.km_charge_per_km) || 15;
         const basePrice = parseFloat(p.service_price) || 0;
         const travelCharge = parseFloat((distKm * kmCharge).toFixed(2));
@@ -90,6 +89,9 @@ export class BookingService {
           proId: p.id,
           name: p.full_name,
           gender: p.gender,
+          avatarUrl: p.avatar_url || p.face_verification_url,
+          isVerified: p.verification_status === 'APPROVED' || p.face_verified === true,
+          verificationStatus: p.verification_status || 'APPROVED',
           ratingAvg: parseFloat(p.rating_avg) || 5.0,
           totalJobsCompleted: p.total_jobs_completed || 0,
           distanceKm: parseFloat(distKm.toFixed(2)),
@@ -99,10 +101,13 @@ export class BookingService {
           estimatedTotal,
           coverageRadiusKm: parseFloat(p.coverage_radius_km) || 50,
         };
-      })
-      .filter((p) => p.distanceKm <= p.coverageRadiusKm);
+      });
 
-    // Sort
+    const inRangePros = nearbyPros.filter((p) => p.distanceKm <= p.coverageRadiusKm);
+    if (inRangePros.length > 0) {
+      nearbyPros = inRangePros;
+    }
+
     if (sortBy === 'rating') {
       nearbyPros.sort((a, b) => b.ratingAvg - a.ratingAvg);
     } else if (sortBy === 'price') {

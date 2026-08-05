@@ -160,6 +160,39 @@ export class ProfessionalService {
       throw new AppError('Cannot go online. Account is blacklisted due to safety violations.', 403, 'ACCOUNT_BLACKLISTED');
     }
 
+    if (data.isOnline) {
+      try {
+        const lat = data.latitude ?? (profile.current_location?.latitude ? parseFloat(profile.current_location.latitude) : 12.9716);
+        const lng = data.longitude ?? (profile.current_location?.longitude ? parseFloat(profile.current_location.longitude) : 77.5946);
+        const locName = profile.assigned_region || profile.service_area || profile.address;
+
+        const geoCheckRes = await fetch('http://localhost:8000/api/v1/geo/check-suspension', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            latitude: lat,
+            longitude: lng,
+            locationName: locName,
+            pincode: profile.pincode,
+          }),
+        });
+
+        if (geoCheckRes.ok) {
+          const geoData = await geoCheckRes.json();
+          if (geoData.isSuspended && (geoData.suspension?.severity === 'FULL_BLACKOUT' || !geoData.suspension?.severity)) {
+            throw new AppError(
+              `Cannot go On Duty. Emergency Service Suspension active in your region: ${geoData.suspension?.message || ''}`,
+              403,
+              'EMERGENCY_SUSPENSION'
+            );
+          }
+        }
+      } catch (err: any) {
+        if (err instanceof AppError) throw err;
+        console.warn('⚠️ Geo pre-flight check warning in professional.service:', err?.message || err);
+      }
+    }
+
     let locationJson = profile.current_location;
     if (data.latitude !== undefined && data.longitude !== undefined) {
       locationJson = {

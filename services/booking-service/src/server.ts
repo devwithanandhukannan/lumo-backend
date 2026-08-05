@@ -74,6 +74,75 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
         )
     `).catch(() => {});
 
+    // Point-in-Polygon helper for emergency blackout check
+    function isPointInRing(lat: number, lng: number, ring: number[][]): boolean {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        const intersect = ((yi > lat) !== (yj > lat)) && (lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    function isPointInGeoJSON(lat: number, lng: number, geojson: any): boolean {
+      if (!geojson) return false;
+      const geom = geojson.type === 'Feature' ? geojson.geometry : geojson;
+      if (!geom || !geom.coordinates) return false;
+      if (geom.type === 'Polygon') {
+        const outer = geom.coordinates[0];
+        if (!outer || !isPointInRing(lat, lng, outer)) return false;
+        for (let h = 1; h < geom.coordinates.length; h++) {
+          if (isPointInRing(lat, lng, geom.coordinates[h])) return false;
+        }
+        return true;
+      } else if (geom.type === 'MultiPolygon') {
+        for (const poly of geom.coordinates) {
+          if (poly[0] && isPointInRing(lat, lng, poly[0])) {
+            let hole = false;
+            for (let h = 1; h < poly.length; h++) {
+              if (isPointInRing(lat, lng, poly[h])) { hole = true; break; }
+            }
+            if (!hole) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Emergency Blackout / Service Suspension Check
+    if (latitude !== undefined && longitude !== undefined) {
+      const activeSuspensions = await pool.query(`
+        SELECT * FROM service_suspensions
+        WHERE is_active = TRUE AND starts_at <= NOW() AND (expires_at IS NULL OR expires_at >= NOW())
+      `).catch(() => ({ rows: [] }));
+
+      const reqLat = parseFloat(latitude);
+      const reqLng = parseFloat(longitude);
+
+      for (const s of activeSuspensions.rows) {
+        let isBlocked = false;
+        if (s.boundary_type === 'POLYGON' && s.polygon_geojson) {
+          let g = s.polygon_geojson;
+          if (typeof g === 'string') { try { g = JSON.parse(g); } catch (_) {} }
+          isBlocked = isPointInGeoJSON(reqLat, reqLng, g);
+        } else if (s.boundary_type === 'RADIUS' && s.center_latitude && s.center_longitude) {
+          const dist = calculateDistanceKm(reqLat, reqLng, parseFloat(s.center_latitude), parseFloat(s.center_longitude));
+          isBlocked = dist <= parseFloat(s.radius_km || 5);
+        }
+
+        if (isBlocked && s.severity === 'FULL_BLACKOUT') {
+          return res.status(403).json({
+            success: false,
+            code: 'SERVICE_SUSPENDED_IN_REGION',
+            message: s.custom_message || 'Service is temporarily closed in your area due to emergency conditions.',
+            suspension: { title: s.title, reasonCategory: s.reason_category }
+          });
+        }
+      }
+    }
+
     const srvRes = await pool.query('SELECT * FROM services WHERE id = $1', [serviceId]);
     const service = srvRes.rows[0];
     if (!service) throw new AppError('Service not found', 404);

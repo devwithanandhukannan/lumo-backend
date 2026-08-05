@@ -207,3 +207,28 @@ CREATE TABLE IF NOT EXISTS misconduct_incidents (
     status VARCHAR(30) NOT NULL DEFAULT 'PENDING_REVIEW',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 15. Service Suspensions & Emergency Blackout Zones Table
+CREATE TABLE IF NOT EXISTS service_suspensions (
+    id VARCHAR(50) PRIMARY KEY,
+    title VARCHAR(150) NOT NULL,
+    reason_category VARCHAR(50) NOT NULL DEFAULT 'OTHER', -- STRIKE, NATURAL_DISASTER, CLIMATE, PUBLIC_SAFETY, OTHER
+    custom_message TEXT NOT NULL,
+    boundary_type VARCHAR(20) NOT NULL DEFAULT 'POLYGON', -- POLYGON, RADIUS, PINCODE
+    polygon_geojson JSONB,
+    center_latitude DOUBLE PRECISION,
+    center_longitude DOUBLE PRECISION,
+    radius_km NUMERIC(6,2) DEFAULT 5.00,
+    affected_pincodes TEXT[],
+    affected_category_ids TEXT[],
+    severity VARCHAR(30) NOT NULL DEFAULT 'FULL_BLACKOUT', -- FULL_BLACKOUT, DELAY_WARNING
+    is_active BOOLEAN DEFAULT TRUE,
+    starts_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    created_by VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_suspensions_active ON service_suspensions (is_active, starts_at, expires_at);
+

@@ -208,6 +208,47 @@ app.post('/api/v1/notifications/push', (req: Request, res: Response) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 5. Emergency Blackout Broadcast (Strikes, Disasters, Climate, Safety alerts)
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/v1/notifications/emergency-broadcast', (req: Request, res: Response) => {
+  try {
+    const { suspensionId, title, reasonCategory, customMessage, affectedRegion } = req.body;
+    if (!title || !customMessage) {
+      return res.status(400).json({ success: false, message: 'title and customMessage are required' });
+    }
+
+    const payload = `data: ${JSON.stringify({
+      type: 'EMERGENCY_BLACKOUT_ALERT',
+      suspensionId,
+      title,
+      reasonCategory: reasonCategory || 'EMERGENCY',
+      customMessage,
+      affectedRegion: affectedRegion || 'Affected Zone',
+      timestamp: new Date().toISOString(),
+    })}\n\n`;
+
+    // Broadcast to all active SSE streams (admin and app streams)
+    let count = 0;
+    sseClients.forEach((client) => {
+      try {
+        client.res.write(payload);
+        count++;
+      } catch (_) {}
+    });
+
+    console.log(`🚨 [EMERGENCY-BROADCAST] Sent blackout alert "${title}" to ${count} active real-time connections`);
+
+    res.json({
+      success: true,
+      broadcastedToSseCount: count,
+      message: `Emergency blackout broadcast sent to ${count} active clients`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Server startup
 // ─────────────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => console.log(`🔔 Notification Service running on port ${PORT}`));

@@ -66,6 +66,32 @@ export class BookingController {
       const customerId = req.user!.userId;
       const { serviceId, scheduledAt, addressText, latitude, longitude, femaleProPreferred, selectedProId } = req.body;
 
+      // Mandatory Server-Side Pre-Flight Check against geo-service
+      try {
+        const geoCheckRes = await fetch('http://localhost:8000/api/v1/geo/check-suspension', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            latitude: parseFloat(latitude),
+            longitude: parseFloat(longitude),
+            locationName: addressText,
+          }),
+        });
+        if (geoCheckRes.ok) {
+          const geoData = await geoCheckRes.json();
+          if (geoData.isSuspended && (geoData.suspension?.severity === 'FULL_BLACKOUT' || !geoData.suspension?.severity)) {
+            res.status(403).json({
+              success: false,
+              message: geoData.suspension?.message || 'Emergency Service Blackout is active in your region.',
+              suspension: geoData.suspension,
+            });
+            return;
+          }
+        }
+      } catch (geoErr) {
+        console.warn('⚠️ Geo service pre-flight check warning:', geoErr);
+      }
+
       const booking = await bookingService.createBooking(
         customerId,
         serviceId,

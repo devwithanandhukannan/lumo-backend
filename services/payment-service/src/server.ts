@@ -2,6 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
+import * as admin from 'firebase-admin';
 import Razorpay from 'razorpay';
 import { pool } from '@lumo/database';
 import { authenticateToken, AppError, errorHandler, AuthenticatedRequest } from '@lumo/common';
@@ -11,14 +14,66 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5008;
 
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_T7vwejiBDVEZv1';
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'TSKG9X2v9JFJnVsW8Ha1HMt0';
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_TMNBx4OauV0n2S';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'uAdKjAohwb7Id8E1jq7GYkLz';
 const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6';
 
 const razorpay = new Razorpay({
   key_id: RAZORPAY_KEY_ID,
   key_secret: RAZORPAY_KEY_SECRET,
 });
+
+// Initialize Firebase Admin for FCM Push Notifications in Payment Service
+try {
+  const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || path.resolve(__dirname, '../../../firebase-service-account.json');
+  if (fs.existsSync(saPath) && !admin.apps.length) {
+    const serviceAccount = JSON.parse(fs.readFileSync(saPath, 'utf8'));
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    console.log('🔥 [PAYMENT-SERVICE] Firebase Admin initialized for Push Notifications');
+  }
+} catch (e: any) {
+  console.warn('⚠️ Firebase Admin init warning:', e?.message || e);
+}
+
+async function sendFcmPushToUser(userId: string, title: string, body: string, dataPayload?: Record<string, string>) {
+  try {
+    const uRes = await pool.query('SELECT fcm_token, role FROM users WHERE id = $1', [userId]);
+    const fcmToken = uRes.rows[0]?.fcm_token;
+    const userRole = uRes.rows[0]?.role || 'CUSTOMER';
+    if (!fcmToken) {
+      console.log(`ℹ️ [PUSH] User "${userId}" has no registered FCM token. Skipping push.`);
+      return;
+    }
+
+    // Use the correct channel ID based on user role
+    const channelId = userRole === 'PROFESSIONAL'
+      ? 'lumo_pro_high_importance_channel'
+      : 'lumo_high_importance_channel';
+
+    if (admin.apps.length) {
+      await admin.messaging().send({
+        token: fcmToken,
+        notification: { title, body },
+        data: dataPayload || {},
+        android: {
+          priority: 'high',
+          notification: {
+            channelId,
+            sound: 'default',
+          },
+        },
+        apns: {
+          payload: { aps: { sound: 'default' } },
+        },
+      });
+      console.log(`📱 [FCM PUSH SENT] User: "${userId}" (${userRole}) via channel: ${channelId} — Title: "${title}"`);
+    } else {
+      console.log(`📱 [SIMULATED PUSH] User: "${userId}" — Title: "${title}" Body: "${body}"`);
+    }
+  } catch (err: any) {
+    console.warn(`⚠️ [FCM PUSH ERROR] Failed to send to user "${userId}":`, err?.message || err);
+  }
+}
 
 app.use(cors({
   origin: (origin, callback) => callback(null, origin || true),
@@ -99,7 +154,7 @@ app.post('/api/v1/payments/verify-platform-fee', authenticateToken, async (req: 
       throw new AppError('bookingId and razorpayPaymentId are required', 400);
     }
 
-    // Verify HMAC signature if signature provided
+    // 1. Strict HMAC SHA256 signature verification if signature is provided
     if (razorpayOrderId && razorpaySignature) {
       const generatedSignature = crypto
         .createHmac('sha256', RAZORPAY_KEY_SECRET)
@@ -107,8 +162,23 @@ app.post('/api/v1/payments/verify-platform-fee', authenticateToken, async (req: 
         .digest('hex');
 
       if (generatedSignature !== razorpaySignature) {
-        console.warn('⚠️ Invalid Razorpay signature provided for platform fee payment');
+        console.error(`❌ [SIGNATURE-FAILED] Invalid Razorpay signature for Order: ${razorpayOrderId}`);
+        throw new AppError('Payment signature verification failed. Invalid or fraudulent payment attempt.', 400);
       }
+    }
+
+    // 2. Fetch payment details directly from Razorpay REST API to verify captured status
+    try {
+      if (!razorpayPaymentId.startsWith('pay_mock_')) {
+        const payment = await razorpay.payments.fetch(razorpayPaymentId);
+        if (payment.status !== 'captured' && payment.status !== 'authorized') {
+          console.error(`❌ [PAYMENT-FAILED] Razorpay payment status is "${payment.status}" for Payment ID: ${razorpayPaymentId}`);
+          throw new AppError(`Payment not completed. Current status is ${payment.status}.`, 400);
+        }
+      }
+    } catch (rzpErr: any) {
+      if (rzpErr instanceof AppError) throw rzpErr;
+      console.warn(`⚠️ Could not query Razorpay API directly:`, rzpErr?.message || rzpErr);
     }
 
     const bRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
@@ -126,6 +196,19 @@ app.post('/api/v1/payments/verify-platform-fee', authenticateToken, async (req: 
        RETURNING *`,
       [razorpayPaymentId, bookingId]
     );
+
+    const bookingObj = updateRes.rows[0];
+    if (bookingObj && bookingObj.pro_id) {
+      const srvRes = await pool.query('SELECT name FROM services WHERE id = $1', [bookingObj.service_id]);
+      const serviceName = srvRes.rows[0]?.name || 'service';
+
+      sendFcmPushToUser(
+        bookingObj.pro_id,
+        'Booking Confirmed! ⚡',
+        `Customer paid platform fee for ${serviceName}. Please proceed to location!`,
+        { bookingId: bookingObj.id, type: 'BOOKING_CONFIRMED' }
+      );
+    }
 
     console.log(`✅ [STAGE-1-PAID] Customer paid Platform Fee for Booking "${bookingId}" (Payment ID: ${razorpayPaymentId})`);
 
@@ -146,7 +229,7 @@ app.post('/api/v1/payments/verify-balance', authenticateToken, async (req: Authe
       throw new AppError('bookingId and razorpayPaymentId are required', 400);
     }
 
-    // Verify HMAC signature if signature provided
+    // 1. Strict HMAC SHA256 signature verification if signature is provided
     if (razorpayOrderId && razorpaySignature) {
       const generatedSignature = crypto
         .createHmac('sha256', RAZORPAY_KEY_SECRET)
@@ -154,8 +237,23 @@ app.post('/api/v1/payments/verify-balance', authenticateToken, async (req: Authe
         .digest('hex');
 
       if (generatedSignature !== razorpaySignature) {
-        console.warn('⚠️ Invalid Razorpay signature provided for balance payment');
+        console.error(`❌ [SIGNATURE-FAILED] Invalid Razorpay signature for Order: ${razorpayOrderId}`);
+        throw new AppError('Payment signature verification failed. Invalid or fraudulent payment attempt.', 400);
       }
+    }
+
+    // 2. Fetch payment details directly from Razorpay REST API to verify captured status
+    try {
+      if (!razorpayPaymentId.startsWith('pay_mock_')) {
+        const payment = await razorpay.payments.fetch(razorpayPaymentId);
+        if (payment.status !== 'captured' && payment.status !== 'authorized') {
+          console.error(`❌ [PAYMENT-FAILED] Razorpay payment status is "${payment.status}" for Payment ID: ${razorpayPaymentId}`);
+          throw new AppError(`Payment not completed. Current status is ${payment.status}.`, 400);
+        }
+      }
+    } catch (rzpErr: any) {
+      if (rzpErr instanceof AppError) throw rzpErr;
+      console.warn(`⚠️ Could not query Razorpay API directly:`, rzpErr?.message || rzpErr);
     }
 
     const bRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
@@ -182,6 +280,13 @@ app.post('/api/v1/payments/verify-balance', authenticateToken, async (req: Authe
          SET is_busy = false, total_jobs_completed = total_jobs_completed + 1, updated_at = NOW()
          WHERE user_id = $1`,
         [booking.pro_id]
+      );
+
+      sendFcmPushToUser(
+        booking.pro_id,
+        'Payment Received! 💰',
+        `Final balance of ₹${booking.balance_amount || booking.total_amount || 0} for booking #${bookingId} paid. Earnings credited!`,
+        { bookingId: booking.id, type: 'PAYMENT_RECEIVED' }
       );
     }
 

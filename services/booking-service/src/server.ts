@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import * as admin from 'firebase-admin';
 import { pool, initDatabaseTables } from '@lumo/database';
 import { authenticateToken, requireRoles, AuthenticatedRequest, AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
@@ -10,11 +13,64 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5005;
 
+// Initialize Firebase Admin for FCM Push Notifications
+try {
+  const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || path.resolve(__dirname, '../../../firebase-service-account.json');
+  if (fs.existsSync(saPath) && !admin.apps.length) {
+    const serviceAccount = JSON.parse(fs.readFileSync(saPath, 'utf8'));
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    console.log('🔥 [BOOKING-SERVICE] Firebase Admin initialized for Push Notifications');
+  }
+} catch (e: any) {
+  console.warn('⚠️ Firebase Admin init warning:', e?.message || e);
+}
+
+async function sendFcmPushToUser(userId: string, title: string, body: string, dataPayload?: Record<string, string>) {
+  try {
+    const uRes = await pool.query('SELECT fcm_token, role FROM users WHERE id = $1', [userId]);
+    const fcmToken = uRes.rows[0]?.fcm_token;
+    const userRole = uRes.rows[0]?.role || 'CUSTOMER';
+    if (!fcmToken) {
+      console.log(`ℹ️ [PUSH] User "${userId}" has no registered FCM token. Skipping push.`);
+      return;
+    }
+
+    // Use the correct channel ID based on user role
+    const channelId = userRole === 'PROFESSIONAL'
+      ? 'lumo_pro_high_importance_channel'
+      : 'lumo_high_importance_channel';
+
+    if (admin.apps.length) {
+      await admin.messaging().send({
+        token: fcmToken,
+        notification: { title, body },
+        data: dataPayload || {},
+        android: {
+          priority: 'high',
+          notification: {
+            channelId,
+            sound: 'default',
+          },
+        },
+        apns: {
+          payload: { aps: { sound: 'default' } },
+        },
+      });
+      console.log(`📱 [FCM PUSH SENT] User: "${userId}" (${userRole}) via channel: ${channelId} — Title: "${title}"`);
+    } else {
+      console.log(`📱 [SIMULATED PUSH] User: "${userId}" — Title: "${title}" Body: "${body}"`);
+    }
+  } catch (err: any) {
+    console.warn(`⚠️ [FCM PUSH ERROR] Failed to send to user "${userId}":`, err?.message || err);
+  }
+}
+
 // Self-healing database migration check
 (async () => {
   try {
     await initDatabaseTables();
     await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
       ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
       ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
       ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee NUMERIC(10,2) DEFAULT 0.00;
@@ -239,6 +295,16 @@ app.post('/api/v1/bookings', authenticateToken, requireRoles(['CUSTOMER']), asyn
       [bookingId, customerId, assignedProId, serviceId, status, scheduledAt || new Date().toISOString(), addressText, custLat, custLng, Boolean(femaleProPreferred), startOtp, endOtp, baseAmount, travelDistanceKm, travelCharge, platformFee, balanceAmount, totalAmount, expiresAt]
     );
 
+    // Send FCM Push Notification to Assigned Professional
+    if (assignedProId) {
+      sendFcmPushToUser(
+        assignedProId,
+        'New Job Request! 🛎️',
+        `You have a new service request for ${service.name} nearby (${addressText || 'Customer Location'}). Tap to respond.`,
+        { bookingId, type: 'NEW_BOOKING_REQUEST' }
+      );
+    }
+
     res.status(201).json({ success: true, data: { ...insertRes.rows[0], service_name: service.name } });
   } catch (err) { next(err); }
 });
@@ -404,6 +470,21 @@ app.post('/api/v1/bookings/:id/accept', authenticateToken, requireRoles(['PROFES
 
     await pool.query('UPDATE professional_profiles SET is_busy = true WHERE user_id = $1', [proId]);
 
+    const booking = updateRes.rows[0];
+    if (booking && booking.customer_id) {
+      const proUserRes = await pool.query('SELECT full_name FROM users WHERE id = $1', [proId]);
+      const srvRes = await pool.query('SELECT name FROM services WHERE id = $1', [booking.service_id]);
+      const proName = proUserRes.rows[0]?.full_name || 'A professional';
+      const serviceName = srvRes.rows[0]?.name || 'service';
+
+      sendFcmPushToUser(
+        booking.customer_id,
+        'Booking Accepted! 🛠️',
+        `${proName} has accepted your booking request for ${serviceName}.`,
+        { bookingId: booking.id, type: 'BOOKING_ACCEPTED' }
+      );
+    }
+
     res.json({ success: true, data: updateRes.rows[0], message: 'Booking accepted! Waiting for customer to pay platform fee.' });
   } catch (err) { next(err); }
 });
@@ -537,6 +618,27 @@ app.post('/api/v1/bookings/:id/cancel', authenticateToken, async (req: Authentic
 
     if (booking.pro_id) {
       await pool.query('UPDATE professional_profiles SET is_busy = false WHERE user_id = $1', [booking.pro_id]);
+    }
+
+    // Send Push Notifications on Cancel
+    if (booking.customer_id === userId) {
+      // Cancelled by Customer -> Notify Assigned Professional
+      if (booking.pro_id) {
+        sendFcmPushToUser(
+          booking.pro_id,
+          'Booking Cancelled ❌',
+          `Customer has cancelled booking #${bookingId}.`,
+          { bookingId, type: 'BOOKING_CANCELLED' }
+        );
+      }
+    } else if (booking.pro_id === userId) {
+      // Cancelled by Professional -> Notify Customer
+      sendFcmPushToUser(
+        booking.customer_id,
+        'Booking Cancelled ❌',
+        `Professional has cancelled booking #${bookingId}.`,
+        { bookingId, type: 'BOOKING_CANCELLED' }
+      );
     }
 
     console.log(`🛑 [BOOKING-CANCELLED] Booking "${bookingId}" cancelled by user "${userId}" (${cancelReasonText})`);

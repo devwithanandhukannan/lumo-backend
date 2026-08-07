@@ -16,6 +16,15 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Self-healing database migration check for FCM token column
+(async () => {
+  try {
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;');
+  } catch (err: any) {
+    console.warn('⚠️ User Service DB Migration check:', err?.message || err);
+  }
+})();
+
 app.get('/health', (req, res) => res.json({ status: 'UP', service: 'User Service' }));
 
 app.get('/api/v1/users/me', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
@@ -23,6 +32,15 @@ app.get('/api/v1/users/me', authenticateToken, async (req: AuthenticatedRequest,
     const userRes = await pool.query('SELECT id, phone_number, email, full_name, role, gender, avatar_url FROM users WHERE id = $1', [req.user!.userId]);
     if (!userRes.rows[0]) throw new AppError('User not found', 404);
     res.json({ success: true, data: userRes.rows[0] });
+  } catch (err) { next(err); }
+});
+
+app.post('/api/v1/users/fcm-token', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken) throw new AppError('fcmToken required', 400);
+    await pool.query('UPDATE users SET fcm_token = $1 WHERE id = $2', [fcmToken, req.user!.userId]);
+    res.json({ success: true, message: 'FCM token updated successfully' });
   } catch (err) { next(err); }
 });
 

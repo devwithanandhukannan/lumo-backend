@@ -31,11 +31,11 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10kb' })); // Restrict payload size
 
-// Rate limiting for auth endpoints (max 5 requests per 15 mins for OTP/Login)
+// Rate limiting for auth endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { success: false, error: 'Too many requests, please try again later.' },
+  max: process.env.NODE_ENV === 'production' ? 15 : 500,
+  message: { success: false, error: 'Too many authentication attempts. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });

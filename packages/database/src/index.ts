@@ -34,6 +34,7 @@ export const initDatabaseTables = async (): Promise<void> => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS latitude NUMERIC(10,8);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude NUMERIC(11,8);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
         ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL;
 

@@ -74,6 +74,7 @@ export const initDatabaseTables = async (): Promise<void> => {
 
         ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS km_charge_per_km NUMERIC(8,2) DEFAULT 15.00;
         ALTER TABLE pro_offered_services ADD COLUMN IF NOT EXISTS per_km_rate NUMERIC(8,2) DEFAULT 15.00;
+        ALTER TABLE pending_service_requests ADD COLUMN IF NOT EXISTS km_charge_per_km NUMERIC(8,2) DEFAULT 15.00;
 
         CREATE TABLE IF NOT EXISTS reviews (
             id VARCHAR(50) PRIMARY KEY,

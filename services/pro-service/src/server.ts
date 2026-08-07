@@ -270,13 +270,21 @@ app.post('/api/v1/pro/offered-services', authenticateToken, async (req: Authenti
 // 4b. Update Price for an Offered Service
 app.post('/api/v1/pro/offered-services/update-price', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
-    const { serviceId, customPrice } = req.body;
+    const { serviceId, customPrice, kmCharge } = req.body;
     const proId = req.user!.userId;
+    const priceVal = customPrice !== undefined && customPrice !== null && customPrice !== '' ? parseFloat(customPrice) : null;
+    const kmVal = kmCharge !== undefined && kmCharge !== null && kmCharge !== '' ? parseFloat(kmCharge) : null;
+
     await pool.query(
-      `UPDATE pro_offered_services SET custom_price = $1, updated_at = NOW() WHERE pro_id = $2 AND service_id = $3`,
-      [customPrice !== undefined && customPrice !== null ? parseFloat(customPrice) : null, proId, serviceId]
+      `UPDATE pro_offered_services 
+       SET custom_price = COALESCE($1, custom_price),
+           km_charge_per_km = COALESCE($2, km_charge_per_km),
+           per_km_rate = COALESCE($2, per_km_rate),
+           updated_at = NOW() 
+       WHERE pro_id = $3 AND service_id = $4`,
+      [priceVal, kmVal, proId, serviceId]
     );
-    res.json({ success: true, message: 'Custom price updated' });
+    res.json({ success: true, message: 'Custom rate & travel fee per km updated' });
   } catch (err) { next(err); }
 });
 
@@ -345,7 +353,7 @@ app.post('/api/v1/pro/custom-services/toggle', authenticateToken, async (req: Au
 // 5. Request New Custom Service (Pending Admin Approval)
 const handleCustomServiceRequest = async (req: any, res: any, next: any) => {
   try {
-    const { serviceName, description, suggestedPrice } = req.body;
+    const { serviceName, description, suggestedPrice, kmCharge } = req.body;
     if (!serviceName) throw new AppError('Service name required', 400);
 
     const requestId = `svc-req-${randomUUID().slice(0, 8)}`;
@@ -357,9 +365,9 @@ const handleCustomServiceRequest = async (req: any, res: any, next: any) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO pending_service_requests (id, pro_id, service_name, description, suggested_price, status)
-       VALUES ($1, $2, $3, $4, $5, 'PENDING_ADMIN_APPROVAL') RETURNING *`,
-      [requestId, proId, serviceName, description || '', suggestedPrice ? parseFloat(suggestedPrice) : null]
+      `INSERT INTO pending_service_requests (id, pro_id, service_name, description, suggested_price, km_charge_per_km, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'PENDING_ADMIN_APPROVAL') RETURNING *`,
+      [requestId, proId, serviceName, description || '', suggestedPrice ? parseFloat(suggestedPrice) : null, kmCharge ? parseFloat(kmCharge) : 15.00]
     );
 
     res.status(201).json({

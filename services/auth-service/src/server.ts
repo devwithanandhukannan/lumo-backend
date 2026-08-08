@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 import { Pool } from 'pg';
 import argon2 from 'argon2';
 import { randomUUID } from 'crypto';
-import { AppError, errorHandler, generateAccessToken, generateRefreshToken, authenticateToken, AuthenticatedRequest } from '@lumo/common';
+import { AppError, errorHandler, generateAccessToken, generateRefreshToken, authenticateToken, requireRoles, AuthenticatedRequest } from '@lumo/common';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 
@@ -359,12 +359,68 @@ const handleAdminLogout = async (req: Request, res: Response, next: NextFunction
   }
 };
 
+// Admin Password Reset Handler (Requires active Admin session & verifies current password)
+const handleAdminResetPassword = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  const client = await pool.connect();
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+      throw new AppError('New password must be at least 6 characters long', 400);
+    }
+
+    if (confirmPassword && newPassword !== confirmPassword) {
+      throw new AppError('New password and confirm password do not match', 400);
+    }
+
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('Authentication required to reset password', 401);
+    }
+
+    const userRes = await client.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const user = userRes.rows[0];
+
+    if (!user) {
+      throw new AppError('Admin account not found', 404);
+    }
+
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+      throw new AppError('Access denied. Admin privileges required.', 403);
+    }
+
+    if (user.password_hash) {
+      if (!currentPassword) {
+        throw new AppError('Current password is required to set a new password', 400);
+      }
+      const isValid = await argon2.verify(user.password_hash, currentPassword);
+      if (!isValid) {
+        throw new AppError('Current password is incorrect', 400);
+      }
+    }
+
+    const newPasswordHash = await argon2.hash(newPassword);
+    await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newPasswordHash, user.id]);
+
+    res.json({
+      success: true,
+      message: 'Admin password updated successfully. Please use your new password next time you log in.',
+    });
+  } catch (err) {
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
 app.post('/api/v1/auth/admin/login', handleAdminLogin);
 app.post('/api/v1/auth/admin-login', handleAdminLogin);
 app.post('/api/v1/auth/admin/refresh', handleAdminRefresh);
 app.post('/api/v1/auth/refresh', handleAdminRefresh);
 app.post('/api/v1/auth/admin/logout', handleAdminLogout);
 app.post('/api/v1/auth/logout', handleAdminLogout);
+app.post('/api/v1/auth/admin/reset-password', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), handleAdminResetPassword);
+app.post('/api/v1/auth/admin/change-password', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), handleAdminResetPassword);
 
 // 5. Verify OTP Request (Using DB Transactions)
 app.post('/api/v1/auth/otp/verify', authLimiter, async (req: Request, res: Response, next: NextFunction) => {

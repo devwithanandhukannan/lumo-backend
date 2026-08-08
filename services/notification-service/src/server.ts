@@ -124,6 +124,36 @@ app.post('/api/v1/notifications/broadcast-sos', (req: Request, res: Response) =>
   }
 });
 
+// 2b. Broadcast General Real-Time Safety & Feedback Events (Customer Reports, Reviews, Booking Updates)
+app.post('/api/v1/notifications/broadcast-event', (req: Request, res: Response) => {
+  try {
+    const { eventType, data, message } = req.body;
+    const activeCount = sseClients.size;
+    console.log(`📢 [BROADCAST-EVENT] Broadcasting ${eventType || 'DATA_UPDATE'} to ${activeCount} admin streams`);
+
+    const payload = `data: ${JSON.stringify({
+      type: eventType || 'DATA_UPDATE',
+      timestamp: new Date().toISOString(),
+      data,
+      message,
+    })}\n\n`;
+
+    const deadClients: string[] = [];
+    sseClients.forEach((client, clientId) => {
+      try {
+        client.res.write(payload);
+      } catch (err: any) {
+        deadClients.push(clientId);
+      }
+    });
+    deadClients.forEach(removeClient);
+
+    res.json({ success: true, broadcastCount: activeCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Real-Time Pro GPS Location Tracking Stream (SSE per Booking)
 // ─────────────────────────────────────────────────────────────────────────────

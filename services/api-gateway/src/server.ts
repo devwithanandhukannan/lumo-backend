@@ -5,19 +5,91 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import http from 'http';
+import rateLimit from 'express-rate-limit';
 
 dotenv.config();
 
 const app = express();
 let PORT = Number(process.env.PORT) || 5000;
 
+// ─────────────────────────────────────────────────────────────
+// CORS — Explicit allowlist (not wildcard)
+// Set ALLOWED_ORIGINS in .env for production domains
+// ─────────────────────────────────────────────────────────────
+const ALLOWED_ORIGINS: string[] = [
+  'http://localhost:3000',   // Admin Next.js dev
+  'http://localhost:3001',
+  'http://localhost:8081',   // Flutter web dev
+  'http://localhost:5000',
+  'http://localhost:8000',
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : []),
+];
+
 app.use(cors({
-  origin: (origin, callback) => callback(null, origin || true),
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    // In development, allow all origins for easier debugging
+    if (process.env.NODE_ENV === 'development') return callback(null, true);
+    callback(new Error(`CORS: Origin '${origin}' not in allowlist`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'Cookie'],
 }));
 app.use(express.json({ limit: '50mb' }));
+
+// ─────────────────────────────────────────────────────────────
+// RATE LIMITING
+// ─────────────────────────────────────────────────────────────
+
+// Tier 1: OTP endpoints — strictest limit to prevent SMS abuse & brute-force
+const otpRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,  // 10 minutes
+  max: 5,                     // max 5 OTP requests per IP per 10 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many OTP requests. Please wait 10 minutes before requesting again.',
+    },
+  },
+});
+
+// Tier 2: General API — protects all microservice routes
+const generalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,        // 1 minute
+  max: 120,                   // 120 requests per IP per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path.startsWith('/health'),  // skip health check
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests. Please slow down.',
+    },
+  },
+});
+
+// Tier 3: Admin API — slightly more restrictive for sensitive admin operations
+const adminApiLimiter = rateLimit({
+  windowMs: 60 * 1000,        // 1 minute
+  max: 60,                    // 60 requests per IP per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Admin API rate limit exceeded.',
+    },
+  },
+});
+
 
 // Downstream service target URLs
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:5001';
@@ -144,6 +216,11 @@ const createServiceProxy = (targetUrl: string, pathPrefix: string) =>
       return headers;
     },
   });
+
+// Apply rate limiters to specific route groups
+app.use('/api/v1/auth/otp', otpRateLimiter);        // OTP: strictest
+app.use('/api/v1/admin', adminApiLimiter);           // Admin: sensitive
+app.use('/api/v1', generalApiLimiter);               // All API: general
 
 // Route mappings to microservices
 app.use('/api/v1/auth', createServiceProxy(AUTH_SERVICE_URL, '/api/v1/auth'));

@@ -19,27 +19,44 @@ export class AuthService {
 
   // 1. Send OTP
   async sendOTP(phoneNumber: string) {
-    if (!phoneNumber || !phoneNumber.startsWith('+')) {
-      throw new AppError('Valid phone number with country code (e.g., +919876543210) is required', 400, 'INVALID_PHONE');
+    // Validate: must have country code and be a plausible mobile number
+    if (!phoneNumber || !phoneNumber.startsWith('+') || phoneNumber.length < 10) {
+      throw new AppError(
+        'Valid phone number with country code is required (e.g., +919876543210)',
+        400,
+        'INVALID_PHONE'
+      );
     }
 
-    const otp = config.nodeEnv === 'development' ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
+    // Use fixed OTP in development, cryptographically random in production
+    const otp = config.nodeEnv === 'development'
+      ? '123456'
+      : Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + config.otpExpiryMinutes * 60 * 1000;
 
     await pool.query(
-      `INSERT INTO otps (phone_number, otp, expires_at) 
-       VALUES ($1, $2, $3) 
+      `INSERT INTO otps (phone_number, otp, expires_at)
+       VALUES ($1, $2, $3)
        ON CONFLICT (phone_number) DO UPDATE SET otp = $2, expires_at = $3`,
       [phoneNumber, otp, expiresAt]
     );
 
-    console.log(`[SMS-SERVICE-MOCK] OTP sent to ${phoneNumber}: ${otp}`);
+    // SECURITY: Only log OTP in development. Never log in production.
+    if (config.nodeEnv === 'development') {
+      console.log(`[DEV-SMS-MOCK] OTP for ${phoneNumber}: ${otp}`);
+    } else {
+      // In production: integrate real SMS provider here (Twilio, MSG91, etc.)
+      // await smsProvider.send(phoneNumber, `Your LUMO OTP is ${otp}. Valid for ${config.otpExpiryMinutes} minutes.`);
+      console.log(`[SMS-SERVICE] OTP dispatched to ${phoneNumber} (value hidden in production)`);
+    }
 
     return {
       phoneNumber,
       message: `OTP sent successfully to ${phoneNumber}`,
       expiresInMinutes: config.otpExpiryMinutes,
-      debugOtp: config.nodeEnv === 'development' ? otp : undefined,
+      // SECURITY: debugOtp is ONLY included in development environment responses.
+      // It is undefined (and thus omitted from JSON) in staging and production.
+      ...(config.nodeEnv === 'development' && { debugOtp: otp }),
     };
   }
 

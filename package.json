@@ -16,7 +16,9 @@
     "dev:pro": "npm --workspace=services/pro-service run dev",
     "dev:catalog": "npm --workspace=services/catalog-service run dev",
     "dev:booking": "npm --workspace=services/booking-service run dev",
-    "dev:safety": "npm --workspace=services/safety-service run dev"
+    "dev:safety": "npm --workspace=services/safety-service run dev",
+    "migrate": "tsx scripts/run-migration.ts",
+    "migrate:001": "tsx scripts/run-migration.ts 001"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0"

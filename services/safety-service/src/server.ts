@@ -398,7 +398,7 @@ app.get('/api/v1/admin/client-feedback', authenticateToken, requireRoles(['ADMIN
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
 
-    res.json(allItems);
+    res.json({ success: true, data: allItems });
   } catch (err) { next(err); }
 });
 

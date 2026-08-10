@@ -13,17 +13,27 @@ export const pool = new Pool({
   connectionTimeoutMillis: 5000,
 });
 
+let isInitialized = false;
+let initPromise: Promise<void> | null = null;
+
 export const initDatabaseTables = async (): Promise<void> => {
-  try {
-    const client = await pool.connect();
+  if (isInitialized) return;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
     try {
-      const sqlPath = path.join(__dirname, 'init.sql');
-      if (fs.existsSync(sqlPath)) {
-        const sql = fs.readFileSync(sqlPath, 'utf8');
-        await client.query(sql);
-      }
-      // Self-healing schema migrations for legacy database instances
-      await client.query(`
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(424242)');
+
+        const sqlPath = path.join(__dirname, 'init.sql');
+        if (fs.existsSync(sqlPath)) {
+          const sql = fs.readFileSync(sqlPath, 'utf8');
+          await client.query(sql);
+        }
+        // Self-healing schema migrations for legacy database instances
+        await client.query(`
         ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
@@ -151,14 +161,22 @@ export const initDatabaseTables = async (): Promise<void> => {
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
-      `);
-      console.log('🐘 PostgreSQL database tables & schema migrations initialized successfully');
-    } finally {
-      client.release();
+        `);
+        await client.query('COMMIT');
+        isInitialized = true;
+        console.log('🐘 PostgreSQL database tables & schema migrations initialized successfully');
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      console.warn('⚠️ Database connection or table initialization warning:', err.message);
     }
-  } catch (err: any) {
-    console.warn('⚠️ Database connection or table initialization warning:', err.message);
-  }
+  })();
+
+  return initPromise;
 };
 
 // Trigger table initialization on pool import

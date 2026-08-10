@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { pool } from '@lumo/database';
+import { authenticateToken, requireRoles, AuthenticatedRequest } from '@lumo/common';
 
 dotenv.config();
 
@@ -276,7 +277,7 @@ app.get('/api/v1/geo/suspensions', async (req, res) => {
 });
 
 // 4. Admin: Create New Service Suspension (GeoJSON Polygon or Radius)
-app.post('/api/v1/geo/suspensions', async (req, res) => {
+app.post('/api/v1/geo/suspensions', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res) => {
   try {
     const {
       title,
@@ -329,7 +330,7 @@ app.post('/api/v1/geo/suspensions', async (req, res) => {
         severity,
         startsAtDate,
         expiresAtDate,
-        createdBy || null,
+        createdBy || req.user?.userId || null,
       ]
     );
 
@@ -340,7 +341,7 @@ app.post('/api/v1/geo/suspensions', async (req, res) => {
 });
 
 // 5. Admin: Toggle Suspension Active Status
-app.patch('/api/v1/geo/suspensions/:id/toggle', async (req, res) => {
+app.patch('/api/v1/geo/suspensions/:id/toggle', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     const { isActive } = req.body;
@@ -356,7 +357,7 @@ app.patch('/api/v1/geo/suspensions/:id/toggle', async (req, res) => {
 });
 
 // 6. Admin: Delete Service Suspension
-app.delete('/api/v1/geo/suspensions/:id', async (req, res) => {
+app.delete('/api/v1/geo/suspensions/:id', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     await pool.query(`DELETE FROM service_suspensions WHERE id = $1`, [id]);

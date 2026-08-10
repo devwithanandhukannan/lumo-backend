@@ -32,6 +32,7 @@ router.post('/safety/incidents', authenticateToken, validateRequest(reportIncide
 // Admin Safety Control Center (SCC) routes
 router.get('/admin/safety/sos', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), (req, res, next) => safetyController.getActiveSOSAlerts(req, res, next));
 router.patch('/admin/safety/sos/:sosId/resolve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), (req, res, next) => safetyController.resolveSOSAlert(req, res, next));
+router.put('/admin/safety/sos/:sosId/resolve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), (req, res, next) => safetyController.resolveSOSAlert(req, res, next));
 
 // Admin System Settings (Google Maps API Key management)
 router.get('/admin/settings', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), (req, res, next) => safetyController.getSystemSettings(req, res, next));

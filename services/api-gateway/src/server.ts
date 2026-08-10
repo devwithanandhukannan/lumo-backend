@@ -38,7 +38,6 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'Cookie'],
 }));
-app.use(express.json({ limit: '50mb' }));
 
 // ─────────────────────────────────────────────────────────────
 // RATE LIMITING
@@ -206,6 +205,7 @@ app.options('/api/v1/notifications/admin/sos-stream', (req: Request, res: Respon
 // Helper for proxied microservice routes with credentials CORS header decoration
 const createServiceProxy = (targetUrl: string, pathPrefix: string) =>
   proxy(targetUrl, {
+    parseReqBody: false,
     proxyReqPathResolver: (req: Request) => `${pathPrefix}${req.url}`,
     userResHeaderDecorator(headers: any, userReq: any) {
       const origin = userReq.headers.origin;

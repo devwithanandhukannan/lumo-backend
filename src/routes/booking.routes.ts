@@ -30,6 +30,7 @@ router.get('/bookings/estimate', (req, res, next) => bookingController.getBookin
 // Authenticated booking routes
 router.post('/bookings', authenticateToken, requireRoles(['CUSTOMER']), validateRequest(createBookingSchema), (req, res, next) => bookingController.createBooking(req, res, next));
 router.get('/bookings/my-bookings', authenticateToken, (req, res, next) => bookingController.getMyBookings(req, res, next));
+router.get('/bookings/:id', authenticateToken, (req, res, next) => bookingController.getBookingById(req, res, next));
 
 // Provider job management routes
 router.post('/pro/bookings/:bookingId/accept', authenticateToken, requireRoles(['PROFESSIONAL']), (req, res, next) => bookingController.acceptBooking(req, res, next));

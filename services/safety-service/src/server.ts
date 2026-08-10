@@ -170,7 +170,7 @@ app.get('/api/v1/admin/safety/sos', authenticateToken, requireRoles(['ADMIN', 'S
 });
 
 // 3. Resolve SOS Alert
-app.put('/api/v1/admin/safety/sos/:id/resolve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+const handleResolveSos = async (req: any, res: any, next: any) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
@@ -178,6 +178,227 @@ app.put('/api/v1/admin/safety/sos/:id/resolve', authenticateToken, requireRoles(
       [id]
     );
     res.json({ success: true, data: result.rows[0] });
+  } catch (err) { next(err); }
+};
+app.put('/api/v1/admin/safety/sos/:id/resolve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), handleResolveSos);
+app.patch('/api/v1/admin/safety/sos/:id/resolve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), handleResolveSos);
+
+// 3b. Admin: Fetch All Client Feedback, Incident Reports, and Safety Escalations Unified
+app.get('/api/v1/admin/client-feedback', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {
+  try {
+    // 1. Fetch Reports
+    const repRes = await pool.query(
+      `SELECT 
+        r.id,
+        r.booking_id,
+        'REPORT' as type,
+        r.created_at,
+        r.reason,
+        r.status as report_status,
+        cu.id as customer_id,
+        COALESCE(cu.full_name, 'Customer') as customer_name,
+        COALESCE(cu.phone_number, 'N/A') as customer_phone,
+        COALESCE(cu.email, 'customer@lumo.in') as customer_email,
+        cu.avatar_url as customer_avatar,
+        pu.id as pro_id,
+        COALESCE(pu.full_name, 'Assigned Professional') as pro_name,
+        COALESCE(pu.phone_number, 'N/A') as pro_phone,
+        COALESCE(pp.rating_avg, 5.0) as pro_rating,
+        COALESCE(pp.verification_status, 'APPROVED') as pro_verification_status,
+        s.id as service_id,
+        COALESCE(s.name, 'LUMO On-Demand Service') as service_name,
+        COALESCE(sc.name, 'General') as service_category,
+        COALESCE(b.total_amount, 0) as service_price
+      FROM booking_reports r
+      JOIN bookings b ON r.booking_id = b.id
+      LEFT JOIN users cu ON b.customer_id = cu.id
+      LEFT JOIN users pu ON b.pro_id = pu.id
+      LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
+      LEFT JOIN services s ON b.service_id = s.id
+      LEFT JOIN service_categories sc ON s.category_id = sc.id
+      ORDER BY r.created_at DESC`
+    );
+
+    // 2. Fetch Reviews
+    const revRes = await pool.query(
+      `SELECT 
+        rev.id,
+        rev.booking_id,
+        'REVIEW' as type,
+        rev.created_at,
+        rev.rating,
+        rev.comment,
+        cu.id as customer_id,
+        COALESCE(cu.full_name, 'Customer') as customer_name,
+        COALESCE(cu.phone_number, 'N/A') as customer_phone,
+        COALESCE(cu.email, 'customer@lumo.in') as customer_email,
+        cu.avatar_url as customer_avatar,
+        pu.id as pro_id,
+        COALESCE(pu.full_name, 'Assigned Professional') as pro_name,
+        COALESCE(pu.phone_number, 'N/A') as pro_phone,
+        COALESCE(pp.rating_avg, 5.0) as pro_rating,
+        COALESCE(pp.verification_status, 'APPROVED') as pro_verification_status,
+        s.id as service_id,
+        COALESCE(s.name, 'LUMO On-Demand Service') as service_name,
+        COALESCE(sc.name, 'General') as service_category,
+        COALESCE(b.total_amount, 0) as service_price
+      FROM reviews rev
+      LEFT JOIN bookings b ON rev.booking_id = b.id
+      LEFT JOIN users cu ON rev.customer_id = cu.id
+      LEFT JOIN users pu ON rev.pro_id = pu.id
+      LEFT JOIN professional_profiles pp ON rev.pro_id = pp.user_id
+      LEFT JOIN services s ON b.service_id = s.id
+      LEFT JOIN service_categories sc ON s.category_id = sc.id
+      ORDER BY rev.created_at DESC`
+    );
+
+    // 3. Fetch SOS Alerts
+    const sosRes = await pool.query(
+      `SELECT 
+        sos.id,
+        COALESCE(sos.booking_id, 'SOS-EMERGENCY') as booking_id,
+        'SAFETY_ESCALATION' as type,
+        sos.created_at,
+        sos.status as sos_status,
+        sos.notes,
+        tu.id as customer_id,
+        COALESCE(tu.full_name, 'SOS Triggerer') as customer_name,
+        COALESCE(tu.phone_number, 'N/A') as customer_phone,
+        COALESCE(tu.email, 'emergency@lumo.in') as customer_email,
+        tu.avatar_url as customer_avatar,
+        pu.id as pro_id,
+        COALESCE(pu.full_name, 'Emergency Escalation') as pro_name,
+        COALESCE(pu.phone_number, 'N/A') as pro_phone,
+        COALESCE(pp.rating_avg, 5.0) as pro_rating,
+        COALESCE(pp.verification_status, 'APPROVED') as pro_verification_status,
+        s.id as service_id,
+        COALESCE(s.name, 'Emergency SOS Escalation') as service_name,
+        COALESCE(sc.name, 'Safety Protocol') as service_category,
+        COALESCE(b.total_amount, 0) as service_price
+      FROM sos_alerts sos
+      LEFT JOIN bookings b ON sos.booking_id = b.id
+      LEFT JOIN users tu ON sos.triggered_by_user_id = tu.id
+      LEFT JOIN users pu ON b.pro_id = pu.id
+      LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
+      LEFT JOIN services s ON b.service_id = s.id
+      LEFT JOIN service_categories sc ON s.category_id = sc.id
+      ORDER BY sos.created_at DESC`
+    );
+
+    const formattedReports = repRes.rows.map((r: any) => {
+      const rawStatus = (r.report_status || 'OPEN').toUpperCase();
+      const status = rawStatus === 'RESOLVED' ? 'RESOLVED' : (rawStatus === 'INVESTIGATING' ? 'INVESTIGATING' : 'PENDING');
+      return {
+        id: r.id,
+        booking_id: r.booking_id,
+        type: 'REPORT',
+        created_at: r.created_at,
+        customer: {
+          id: r.customer_id || 'usr-cust',
+          name: r.customer_name,
+          phone: r.customer_phone,
+          email: r.customer_email,
+          avatar: r.customer_avatar,
+        },
+        professional: {
+          id: r.pro_id || 'usr-pro',
+          name: r.pro_name,
+          phone: r.pro_phone,
+          rating: parseFloat(r.pro_rating) || 5.0,
+          verification_status: r.pro_verification_status,
+        },
+        service: {
+          id: r.service_id || 'srv-gen',
+          name: r.service_name,
+          category: r.service_category,
+          price: parseFloat(r.service_price) || 0,
+        },
+        report: {
+          issue_type: 'Client Reported Issue',
+          severity: 'HIGH',
+          status,
+          description: r.reason,
+          action_taken: status === 'RESOLVED' ? 'Resolved by Safety Control Admin' : undefined,
+        },
+      };
+    });
+
+    const formattedReviews = revRes.rows.map((r: any) => ({
+      id: r.id,
+      booking_id: r.booking_id,
+      type: 'REVIEW',
+      created_at: r.created_at,
+      customer: {
+        id: r.customer_id || 'usr-cust',
+        name: r.customer_name,
+        phone: r.customer_phone,
+        email: r.customer_email,
+        avatar: r.customer_avatar,
+      },
+      professional: {
+        id: r.pro_id || 'usr-pro',
+        name: r.pro_name,
+        phone: r.pro_phone,
+        rating: parseFloat(r.pro_rating) || 5.0,
+        verification_status: r.pro_verification_status,
+      },
+      service: {
+        id: r.service_id || 'srv-gen',
+        name: r.service_name,
+        category: r.service_category,
+        price: parseFloat(r.service_price) || 0,
+      },
+      review: {
+        rating: parseInt(r.rating, 10) || 5,
+        comment: r.comment || 'Client completed service rating.',
+        tags: ['Verified Booking', 'On-Time Service'],
+        sentiment: (parseInt(r.rating, 10) || 5) >= 4 ? 'POSITIVE' : 'CRITICAL',
+      },
+    }));
+
+    const formattedSos = sosRes.rows.map((r: any) => {
+      const isResolved = (r.sos_status || '').toUpperCase() === 'RESOLVED';
+      return {
+        id: r.id,
+        booking_id: r.booking_id,
+        type: 'SAFETY_ESCALATION',
+        created_at: r.created_at,
+        customer: {
+          id: r.customer_id || 'usr-cust',
+          name: r.customer_name,
+          phone: r.customer_phone,
+          email: r.customer_email,
+          avatar: r.customer_avatar,
+        },
+        professional: {
+          id: r.pro_id || 'usr-pro',
+          name: r.pro_name,
+          phone: r.pro_phone,
+          rating: parseFloat(r.pro_rating) || 5.0,
+          verification_status: r.pro_verification_status,
+        },
+        service: {
+          id: r.service_id || 'srv-gen',
+          name: r.service_name,
+          category: r.service_category,
+          price: parseFloat(r.service_price) || 0,
+        },
+        report: {
+          issue_type: '🚨 Live Emergency SOS Triggered',
+          severity: 'CRITICAL',
+          status: isResolved ? 'RESOLVED' : 'PENDING',
+          description: r.notes || 'Emergency button pressed during active on-demand booking.',
+          action_taken: isResolved ? 'Emergency resolved and closed by Safety Operations Team' : undefined,
+        },
+      };
+    });
+
+    // Merge and sort newest first
+    const allItems = [...formattedSos, ...formattedReports, ...formattedReviews].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    res.json(allItems);
   } catch (err) { next(err); }
 });
 
@@ -194,7 +415,7 @@ app.get('/api/v1/admin/reports', authenticateToken, requireRoles(['ADMIN', 'SUPE
        FROM booking_reports r
        JOIN bookings b ON r.booking_id = b.id
        LEFT JOIN services s ON b.service_id = s.id
-       JOIN users cu ON r.reporter_id = cu.id
+       JOIN users cu ON b.customer_id = cu.id
        LEFT JOIN users pu ON b.pro_id = pu.id
        LEFT JOIN professional_profiles pp ON b.pro_id = pp.user_id
        LEFT JOIN reviews rev ON b.id = rev.booking_id
@@ -204,6 +425,28 @@ app.get('/api/v1/admin/reports', authenticateToken, requireRoles(['ADMIN', 'SUPE
     res.json({ success: true, data: reports.rows });
   } catch (err) { next(err); }
 });
+
+// 3b2. Admin: Update Customer Report Status
+const handleUpdateReportStatus = async (req: any, res: any, next: any) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    let result = await pool.query(
+      `UPDATE booking_reports SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+    if (result.rowCount === 0) {
+      result = await pool.query(
+        `UPDATE sos_alerts SET status = $1 WHERE id = $2 RETURNING *`,
+        [status, id]
+      );
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) { next(err); }
+};
+
+app.patch('/api/v1/admin/reports/:id/status', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), handleUpdateReportStatus);
+app.put('/api/v1/admin/reports/:id/status', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), handleUpdateReportStatus);
 
 // 3c. Admin: Fetch All Customer Reviews & Star Ratings
 app.get('/api/v1/admin/reviews', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req, res, next) => {

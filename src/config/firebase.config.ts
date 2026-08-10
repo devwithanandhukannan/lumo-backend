@@ -70,10 +70,3 @@ export const getFirebaseAuth = (): Auth => {
   }
   return getAuth();
 };
-
-export const getFirebaseAuth = (): Auth => {
-  if (getApps().length === 0) {
-    initializeFirebase();
-  }
-  return getAuth();
-};

@@ -425,6 +425,9 @@ app.get('/api/v1/bookings/my-bookings', authenticateToken, async (req: Authentic
 app.get('/api/v1/bookings/:id', authenticateToken, async (req: AuthenticatedRequest, res, next) => {
   try {
     const bookingId = req.params.id;
+    const userId = req.user!.userId;
+    const userRole = req.user!.role;
+
     const bookingRes = await pool.query(
       `SELECT b.*,
               s.name as service_name,
@@ -448,7 +451,19 @@ app.get('/api/v1/bookings/:id', authenticateToken, async (req: AuthenticatedRequ
     );
 
     if (bookingRes.rowCount === 0) throw new AppError('Booking not found', 404);
-    res.json({ success: true, data: bookingRes.rows[0] });
+    const booking = bookingRes.rows[0];
+
+    // Ownership check: Customer, assigned pro, or Admin can access
+    if (
+      booking.customer_id !== userId &&
+      booking.pro_id !== userId &&
+      userRole !== 'ADMIN' &&
+      userRole !== 'SUPER_ADMIN'
+    ) {
+      throw new AppError('Unauthorized to access this booking', 403);
+    }
+
+    res.json({ success: true, data: booking });
   } catch (err) { next(err); }
 });
 
@@ -499,7 +514,7 @@ app.post('/api/v1/bookings/:id/start', authenticateToken, requireRoles(['PROFESS
     const booking = bRes.rows[0];
 
     if (!booking) throw new AppError('Booking not found', 404);
-    if (booking.start_otp !== otp && otp !== '4920') throw new AppError('Invalid Start OTP code', 400);
+    if (booking.start_otp !== String(otp).trim()) throw new AppError('Invalid Start OTP code', 400);
 
     const updateRes = await pool.query(
       `UPDATE bookings SET status = 'IN_PROGRESS', updated_at = NOW() WHERE id = $1 RETURNING *`,
@@ -520,7 +535,7 @@ app.post('/api/v1/bookings/:id/complete', authenticateToken, requireRoles(['PROF
     const booking = bRes.rows[0];
 
     if (!booking) throw new AppError('Booking not found', 404);
-    if (booking.end_otp !== otp && otp !== '8103') throw new AppError('Invalid End OTP code', 400);
+    if (booking.end_otp !== String(otp).trim()) throw new AppError('Invalid End OTP code', 400);
 
     const updateRes = await pool.query(
       `UPDATE bookings SET status = 'JOB_COMPLETED_PAYMENT_DUE', updated_at = NOW() WHERE id = $1 RETURNING *`,

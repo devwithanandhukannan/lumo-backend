@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { pool } from '@lumo/database';
-import { authenticateToken, AuthenticatedRequest, AppError, errorHandler } from '@lumo/common';
+import { authenticateToken, requireRoles, AuthenticatedRequest, AppError, errorHandler } from '@lumo/common';
 import { randomUUID } from 'crypto';
 
 dotenv.config();
@@ -58,7 +58,7 @@ app.post('/api/v1/users/locations', authenticateToken, async (req: Authenticated
 });
 
 // Update 10: Admin Customers vault endpoint
-app.get('/api/v1/users/admin/customers', async (req, res, next) => {
+app.get('/api/v1/users/admin/customers', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const customersRes = await pool.query(
       `SELECT u.id, u.phone_number, u.email, u.full_name, u.gender, u.is_active, u.created_at,

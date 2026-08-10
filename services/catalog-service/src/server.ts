@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { pool } from '@lumo/database';
-import { AppError, errorHandler } from '@lumo/common';
+import { AppError, errorHandler, authenticateToken, requireRoles, AuthenticatedRequest } from '@lumo/common';
 import { randomUUID } from 'crypto';
 
 dotenv.config();
@@ -109,7 +109,7 @@ app.get('/api/v1/catalog/categories', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.post('/api/v1/catalog/categories', async (req, res, next) => {
+app.post('/api/v1/catalog/categories', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { name, description, icon } = req.body;
     if (!name) {
@@ -325,7 +325,7 @@ app.get('/api/v1/catalog/services/:serviceId/professionals', async (req, res, ne
   } catch (err) { next(err); }
 });
 
-app.post('/api/v1/catalog/services', async (req, res, next) => {
+app.post('/api/v1/catalog/services', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { categoryId, customCategoryName, name, description, basePrice, durationMinutes, imageUrl, commissionType, commissionValue, commissionPct } = req.body;
     if (!name || !categoryId || basePrice === undefined) {
@@ -370,7 +370,7 @@ app.post('/api/v1/catalog/services', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.put('/api/v1/catalog/services/:id', async (req, res, next) => {
+app.put('/api/v1/catalog/services/:id', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { id } = req.params;
     const { name, categoryId, customCategoryName, basePrice, description, durationMinutes, imageUrl, commissionType, commissionValue, commissionPct } = req.body;
@@ -424,7 +424,7 @@ app.put('/api/v1/catalog/services/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.delete('/api/v1/catalog/services/:id', async (req, res, next) => {
+app.delete('/api/v1/catalog/services/:id', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { id } = req.params;
     await pool.query('UPDATE services SET is_active = false WHERE id = $1', [id]);
@@ -434,7 +434,7 @@ app.delete('/api/v1/catalog/services/:id', async (req, res, next) => {
 
 // ─── PENDING PROFESSIONAL SERVICE REQUESTS (ADMIN REVIEW) ──────────────────────
 
-app.get('/api/v1/catalog/service-requests', async (req, res, next) => {
+app.get('/api/v1/catalog/service-requests', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const requests = await pool.query(`
       SELECT r.*, u.full_name as pro_name, u.phone_number as pro_phone
@@ -446,7 +446,7 @@ app.get('/api/v1/catalog/service-requests', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.post('/api/v1/catalog/service-requests/:id/approve', async (req, res, next) => {
+app.post('/api/v1/catalog/service-requests/:id/approve', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { id } = req.params;
     const { categoryId, basePrice } = req.body;
@@ -498,7 +498,7 @@ app.post('/api/v1/catalog/service-requests/:id/approve', async (req, res, next) 
   } catch (err) { next(err); }
 });
 
-app.post('/api/v1/catalog/service-requests/:id/reject', async (req, res, next) => {
+app.post('/api/v1/catalog/service-requests/:id/reject', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { id } = req.params;
     await pool.query(
@@ -509,7 +509,7 @@ app.post('/api/v1/catalog/service-requests/:id/reject', async (req, res, next) =
   } catch (err) { next(err); }
 });
 
-app.delete('/api/v1/catalog/service-requests/:id', async (req, res, next) => {
+app.delete('/api/v1/catalog/service-requests/:id', authenticateToken, requireRoles(['ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { id } = req.params;
     await pool.query('DELETE FROM pending_service_requests WHERE id = $1', [id]);

@@ -45,6 +45,9 @@ router.get('/health', (req, res, next) => professionalController.getAccountHealt
 router.put('/duty-status', validateRequest(dutyStatusSchema), (req, res, next) =>
   professionalController.updateDutyStatus(req, res, next)
 );
+router.post('/duty-status', validateRequest(dutyStatusSchema), (req, res, next) =>
+  professionalController.updateDutyStatus(req, res, next)
+);
 router.get('/training/modules', (req, res, next) => professionalController.getTrainingModules(req, res, next));
 router.post('/training/modules/:id/complete', validateRequest(submitQuizSchema), (req, res, next) =>
   professionalController.submitTrainingQuiz(req, res, next)

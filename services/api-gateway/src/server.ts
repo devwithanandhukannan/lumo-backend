@@ -232,6 +232,7 @@ app.use('/api/v1/geo', createServiceProxy(GEO_SERVICE_URL, '/api/v1/geo'));
 app.use('/api/v1/safety', createServiceProxy(SAFETY_SERVICE_URL, '/api/v1/safety'));
 app.use('/api/v1/payments', createServiceProxy(PAYMENT_SERVICE_URL, '/api/v1/payments'));
 app.use('/api/v1/notifications', createServiceProxy(NOTIFICATION_SERVICE_URL, '/api/v1/notifications'));
+app.use('/api/v1/admin/payouts', createServiceProxy(PAYMENT_SERVICE_URL, '/api/v1/admin/payouts'));
 app.use('/api/v1/admin', createServiceProxy(SAFETY_SERVICE_URL, '/api/v1/admin'));
 
 const startServer = (targetPort: number) => {

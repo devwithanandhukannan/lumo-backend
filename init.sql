@@ -232,3 +232,61 @@ CREATE TABLE IF NOT EXISTS service_suspensions (
 
 CREATE INDEX IF NOT EXISTS idx_service_suspensions_active ON service_suspensions (is_active, starts_at, expires_at);
 
+-- 16. Professional Wallets Table
+CREATE TABLE IF NOT EXISTS pro_wallets (
+    pro_id VARCHAR(50) PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    balance NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+    locked_balance NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+    total_earned NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+    total_withdrawn NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 17. Professional Payout Methods Table
+CREATE TABLE IF NOT EXISTS pro_payout_methods (
+    id VARCHAR(50) PRIMARY KEY,
+    pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(30) NOT NULL, -- 'UPI' | 'BANK_ACCOUNT'
+    upi_id VARCHAR(100),
+    account_holder_name VARCHAR(150),
+    account_number VARCHAR(50),
+    ifsc_code VARCHAR(20),
+    bank_name VARCHAR(100),
+    is_primary BOOLEAN DEFAULT TRUE,
+    is_verified BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 18. Payout Requests Table
+CREATE TABLE IF NOT EXISTS payout_requests (
+    id VARCHAR(50) PRIMARY KEY,
+    pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount NUMERIC(10,2) NOT NULL,
+    payout_method_type VARCHAR(30) NOT NULL, -- 'UPI' | 'BANK_ACCOUNT'
+    payout_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING', -- 'PENDING', 'PROCESSING', 'COMPLETED', 'REJECTED', 'FAILED'
+    utr_number VARCHAR(100),
+    gateway_payout_id TEXT,
+    processed_by VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+    processed_at TIMESTAMPTZ,
+    rejection_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 19. Professional Wallet Transactions Ledger Table
+CREATE TABLE IF NOT EXISTS pro_wallet_transactions (
+    id VARCHAR(50) PRIMARY KEY,
+    pro_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    booking_id VARCHAR(50) REFERENCES bookings(id) ON DELETE SET NULL,
+    payout_request_id VARCHAR(50) REFERENCES payout_requests(id) ON DELETE SET NULL,
+    type VARCHAR(40) NOT NULL, -- 'JOB_EARNING', 'WITHDRAWAL', 'WITHDRAWAL_REFUND', 'BONUS', 'PENALTY'
+    amount NUMERIC(10,2) NOT NULL,
+    is_credit BOOLEAN NOT NULL,
+    balance_after NUMERIC(10,2) NOT NULL,
+    title VARCHAR(150) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+

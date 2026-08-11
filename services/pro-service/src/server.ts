@@ -351,17 +351,16 @@ app.post('/api/v1/pro/custom-services/toggle', authenticateToken, async (req: Au
 });
 
 // 5. Request New Custom Service (Pending Admin Approval)
-const handleCustomServiceRequest = async (req: any, res: any, next: any) => {
+const handleCustomServiceRequest = async (req: AuthenticatedRequest, res: any, next: any) => {
   try {
     const { serviceName, description, suggestedPrice, kmCharge } = req.body;
     if (!serviceName) throw new AppError('Service name required', 400);
 
     const requestId = `svc-req-${randomUUID().slice(0, 8)}`;
-    let proId = req.user?.userId;
+    const proId = req.user?.userId;
 
     if (!proId) {
-      const proUser = await pool.query("SELECT id FROM users WHERE role = 'PROFESSIONAL' ORDER BY created_at DESC LIMIT 1");
-      proId = proUser.rows[0]?.id || 'usr-40ee0c6d';
+      throw new AppError('Unauthorized: Professional authentication required', 401);
     }
 
     const result = await pool.query(
@@ -378,8 +377,8 @@ const handleCustomServiceRequest = async (req: any, res: any, next: any) => {
   } catch (err) { next(err); }
 };
 
-app.post('/api/v1/pro/request-service', handleCustomServiceRequest);
-app.post('/api/v1/pro/service-request', handleCustomServiceRequest);
+app.post('/api/v1/pro/request-service', authenticateToken, handleCustomServiceRequest);
+app.post('/api/v1/pro/service-request', authenticateToken, handleCustomServiceRequest);
 
 // 6. Toggle Duty Status (Online / Offline)
 const handleDutyStatus = async (req: AuthenticatedRequest, res: any, next: any) => {
